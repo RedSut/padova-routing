@@ -31,6 +31,17 @@ padova-routing/
 └── requirements.txt
 ```
 
+## Cosa va dove in `dati/`
+
+- **`dati/`** (livello principale): grafi stradali grezzi, scaricati una
+  volta da OpenStreetMap — `padova_drive.graphml`, `veneto_drive.graphml`.
+  Sono l'input di partenza, non si rigenerano col training.
+- **`dati/modelli_salvati/`**: modelli ML già allenati — `modello_bcf_anelli.json`,
+  `modello_bcf_6anelli.json`, `modello_bcf_veneto.json`,
+  `learned_potentials_model.joblib`. Sono output del training (vedi `modelli/`),
+  quindi rigenerabili rilanciando le funzioni corrispondenti, ma comodi da
+  salvare per non doverlo rifare ogni volta.
+
 ## Setup
 
 ### Su Google Colab (consigliato per la prima esecuzione)
