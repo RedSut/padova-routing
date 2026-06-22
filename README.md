@@ -31,7 +31,36 @@ padova-routing/
 └── requirements.txt
 ```
 
-## Cosa va dove in `dati/`
+## Cosa va dove sul Drive (struttura reale del progetto)
+
+```
+Advanced Topics in Algorithms/
+├── notebook_principale.ipynb
+├── grafi/
+│   ├── padova_drive.graphml
+│   └── veneto_drive.graphml
+├── modelli_salvati/
+│   ├── learned_potentials_model.joblib   (modello standard)
+│   ├── modello_bcf_anelli.json           (il migliore finora)
+│   ├── modello_bcf_6anelli.json
+│   └── modello_bcf_veneto.json
+├── traffico/                              (esperimenti per fascia oraria,
+│   ├── padova_traffico_mattina.graphml     non ancora integrati nella
+│   ├── padova_traffico_sera.graphml        pipeline principale)
+│   ├── padova_traffico_notte.graphml
+│   └── modello_traffico_padova.joblib
+├── grafici e immagini/
+│   └── *.png  (output delle celle di analisi/confronto)
+└── archivio/
+    └── cose vecchie/  (notebook superati, mantenuti per riferimento)
+```
+
+I path verso queste cartelle sono configurati nella cella "0. Setup ambiente"
+di `notebook_principale.ipynb` (`GRAFI_DIR`, `MODELLI_DIR`, `TRAFFICO_DIR`,
+`GRAFICI_DIR`). Se sposti o rinomini una cartella su Drive, aggiorna quella
+cella di conseguenza.
+
+## Cosa va dove in `dati/` (esecuzione locale, non Colab)
 
 - **`dati/`** (livello principale): grafi stradali grezzi, scaricati una
   volta da OpenStreetMap — `padova_drive.graphml`, `veneto_drive.graphml`.
