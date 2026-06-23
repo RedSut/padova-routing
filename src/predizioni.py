@@ -48,7 +48,7 @@ def genera_predizioni(
     G: nx.MultiDiGraph,
     model,
     target,
-    ora_del_giorno: float | None = None,
+    periodo_giorno: float | None = None,
     scale_factor: float = 10.0,
 ) -> tuple[dict, dict]:
     """
@@ -90,9 +90,9 @@ def genera_predizioni(
             "haversine_dist_m": aria_dist,
         }
     )
-    if ora_del_giorno is not None:
-        X["ora_giorno"] = ora_del_giorno
-        colonne.append("ora_giorno")
+    if periodo_giorno is not None:
+        X["periodo_giorno"] = periodo_giorno
+        colonne.append("periodo_giorno")
     X = X[colonne]
 
     if hasattr(model, "feature_names_in_"):

@@ -1,26 +1,14 @@
 """
 src/interpolazione.py
 ======================
-Implementazione della proposta "interpolazione spaziale" (dalla mail al
-prof. Scquizzato): il modello ML predice le variabili duali solo per un
-sottoinsieme di nodi "ancora" (campionati casualmente), e i restanti nodi
-ottengono il loro potenziale per interpolazione spaziale (triangolazione
-di Delaunay via scipy.interpolate.LinearNDInterpolator), con fallback al
-vicino più prossimo per i nodi fuori dal convex hull delle ancore.
+Implementazione dell'interpolazione spaziale: il modello ML predice le 
+variabili duali solo per un sottoinsieme di nodi "ancora" (campionati casualmente), 
+e i restanti nodi ottengono il loro potenziale per interpolazione spaziale 
+(triangolazione di Delaunay via scipy.interpolate.LinearNDInterpolator), con fallback 
+al vicino più prossimo per i nodi fuori dal convex hull delle ancore.
 
-Vantaggio: il costo di model.predict() (il vero collo di bottiglia nella
-generazione delle predizioni, vedi note di sviluppo) scala con
-sample_ratio * N invece che con N, mentre l'interpolazione stessa è
-quasi istantanea (la triangolazione di Delaunay e' calcolata in C da
-scipy).
-
-ATTENZIONE — segno delle predizioni: questa funzione usa
-`y_hat_int = round(val * scale_factor)` (segno DIRETTO), mentre
-predizioni.genera_predizioni usa `-y_arr * scale_factor` (segno
-INVERTITO, validato come corretto in valutazione/consistenza.py).
-Prima di usare questa funzione in produzione, verificarne il segno con
-valutazione.consistenza.sanity_check_segno — potrebbe essere necessario
-invertire il segno qui per coerenza con il resto della pipeline.
+Vantaggio: il costo di model.predict() scala con sample_ratio * N invece 
+che con N, mentre l'interpolazione stessa è calcolata velocemente in C da scipy.
 """
 
 import random
@@ -36,6 +24,7 @@ def genera_predizioni_interpolate(
     G: nx.MultiDiGraph,
     model,
     target,
+    periodo_giorno: float | None = None,
     sample_ratio: float = 0.1,
     scale_factor: float = 10.0,
     min_ancore: int = 100,
@@ -48,13 +37,12 @@ def genera_predizioni_interpolate(
     lineare (Delaunay) con fallback nearest-neighbor.
 
     Il target e' sempre incluso tra le ancore, per garantire che il suo
-    potenziale resti esattamente 0 (come nella convenzione di
-    predizioni.genera_predizioni) e non sia soggetto a errore di
-    interpolazione.
+    potenziale resti esattamente 0.
 
-    Restituisce (y_hat, y_hat_int), stessa struttura di
-    predizioni.genera_predizioni — ma vedere l'avviso sul segno nel
-    docstring del modulo prima di usarla come drop-in replacement.
+    L'inversione di segno rispetto all'output grezzo del modello viene 
+    eseguita internamente per garantire compatibilità con la sanazione BCF.
+
+    Restituisce (y_hat, y_hat_int).
     """
     if seed is not None:
         random.seed(seed)
@@ -83,6 +71,13 @@ def genera_predizioni_interpolate(
     feature_cols = ["node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"]
     df_anchors = pd.DataFrame(X_anchors, columns=feature_cols)
 
+    if periodo_giorno is not None:
+        df_anchors["periodo_giorno"] = periodo_giorno
+        feature_cols.append("periodo_giorno")
+
+    if hasattr(model, "feature_names_in_"):
+        df_anchors = df_anchors[model.feature_names_in_]
+
     # Inferenza ML solo sulle ancore — il vero collo di bottiglia, ridotto
     # a sample_ratio * N invece di N
     y_anchors_raw = model.predict(df_anchors)
@@ -106,13 +101,17 @@ def genera_predizioni_interpolate(
     y_hat_raw, y_hat_int = {}, {}
 
     for i, (n_id, _) in enumerate(anchors):
-        val = y_anchors_raw[i]
+        val = -y_anchors_raw[i] * scale_factor
         y_hat_raw[n_id] = val
-        y_hat_int[n_id] = int(round(val * scale_factor))
+        y_hat_int[n_id] = int(round(val))
 
     for i, (n_id, _) in enumerate(others):
-        val = y_others_raw[i]
+        val = -y_others_raw[i] * scale_factor
         y_hat_raw[n_id] = val
-        y_hat_int[n_id] = int(round(val * scale_factor))
+        y_hat_int[n_id] = int(round(val))
+
+    # Forza esattamente a 0 il potenziale del target
+    y_hat_raw[target] = 0.0
+    y_hat_int[target] = 0
 
     return y_hat_raw, y_hat_int
