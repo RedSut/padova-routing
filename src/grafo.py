@@ -55,7 +55,16 @@ def carica_ambiente(graphml_path: str, model_path: str | None = None):
 
     model = None
     if model_path is not None:
-        model = joblib.load(model_path)
+        if str(model_path).endswith(".json"):
+            import xgboost as xgb
+            from modelli.base import WrapperXGBoost
+            booster = xgb.Booster()
+            booster.load_model(model_path)
+            # Recupera le feature name dal booster salvato, se presenti, altrimenti usa un default
+            f_names = booster.feature_names if booster.feature_names else ["node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"]
+            model = WrapperXGBoost(booster, f_names)
+        else:
+            model = joblib.load(model_path)
 
     print(f"Grafo caricato: {len(G.nodes())} nodi, {len(G.edges())} archi")
     return G, model
