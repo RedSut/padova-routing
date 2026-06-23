@@ -66,10 +66,6 @@ def genera_predizioni(
     peso(u,v) + y_hat[u] - y_hat[v] deve restare piccolo lungo il percorso
     verso il target) serve il segno opposto: da qui il -y_arr.
 
-    Questa inversione e' stata validata empiricamente (vedi
-    valutazione/consistenza.py): il segno invertito produce sistematicamente
-    meno archi con costo ridotto negativo rispetto al segno diretto.
-
     Restituisce:
         y_hat     : {nodo -> float}  potenziali float originali
         y_hat_int : {nodo -> int}    potenziali arrotondati (per pesi interi)
