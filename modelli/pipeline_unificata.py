@@ -130,7 +130,7 @@ def genera_dataset_unificato(
                             
                         righe_dataset.append(riga)
 
-            if (idx + 1) % 10 == 0:
+            if (idx + 1) % 30 == 0:
                 print(f"  {idx + 1}/{len(target_selezionati)} target completati.")
 
         df_centro = pd.DataFrame(righe_dataset)
@@ -213,7 +213,7 @@ def allena_modello_unificato(
     n_round: int = 300,
     test_size: float = 0.2,
     seed: int = 42,
-    ogni_n_round_print: int = 20,
+    ogni_n_round_print: int = 50,
 ) -> tuple[xgb.Booster, list[str], dict]:
     """
     Allena il modello XGBoost universale. 
