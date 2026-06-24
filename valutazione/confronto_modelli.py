@@ -25,21 +25,26 @@ def confronta_modelli_runtime(
     weight_attr: str = "travel_time_d",
     scale_factor: float = 10.0,
     periodo_giorno: float | None = None,
+    verbose: bool = False,
 ) -> pd.DataFrame:
     """
     Esegue l'intera pipeline per ciascun modello.
     Restituisce un DataFrame in formato 'tidy' (long format):
     [modello, coppia, fascia, riduzione_pct, trovato]
     """
+    print(f"Calcolo baseline Dijkstra su {len(coppie)} coppie...")
     nodi_esplorati_baseline = {}
-    for dati_coppia in coppie:
+    for i, dati_coppia in enumerate(coppie):
         nome = dati_coppia[0]
         source = dati_coppia[1]
         target = dati_coppia[2]
         
         visitati = dijkstra_con_nodi_visitati(G, source, target, weight=weight_attr)
         nodi_esplorati_baseline[nome] = len(visitati)
-        print(f"Dijkstra vanilla — {nome}: {len(visitati)} nodi esplorati")
+        if verbose:
+            print(f"Dijkstra vanilla — {nome}: {len(visitati)} nodi esplorati")
+        elif (i + 1) % 100 == 0:
+            print(f"  {i + 1}/{len(coppie)} baseline completate.")
     print()
 
     risultati = []
@@ -47,7 +52,7 @@ def confronta_modelli_runtime(
     for nome_modello, modello_corrente in modelli.items():
         print(f"=== Modello: {nome_modello} ===")
 
-        for dati_coppia in coppie:
+        for i, dati_coppia in enumerate(coppie):
             nome = dati_coppia[0]
             source = dati_coppia[1]
             target = dati_coppia[2]
@@ -80,10 +85,14 @@ def confronta_modelli_runtime(
                     "riduzione_pct": riduzione_pct,
                     "trovato": True
                 })
-                print(f"  {nome}: {n_sanato} nodi (baseline {n_baseline}) → {riduzione_pct:+.1f}%")
+                if verbose:
+                    print(f"  {nome}: {n_sanato} nodi (baseline {n_baseline}) → {riduzione_pct:+.1f}%")
+                elif (i + 1) % 100 == 0:
+                    print(f"  {i + 1}/{len(coppie)} inferenze completate.")
 
             except Exception as ex:
-                print(f"  ❌ {nome}: {ex}")
+                if verbose:
+                    print(f"  ❌ {nome}: {ex}")
                 risultati.append({
                     "modello": nome_modello,
                     "coppia": nome,
