@@ -93,6 +93,7 @@ def esegui_bcf(
     algoritmo: str = "BCF",
     diam_apprx: int = 0,
     verbose: bool = False,
+    quiet: bool = True,
 ) -> tuple[dict, float]:
     """
     Esegue l'implementazione BCF/GOR C++ e restituisce i potenziali.
@@ -171,8 +172,9 @@ def esegui_bcf(
         f"grezzo del C++."
     )
 
-    print(
-        f"  {algoritmo} completato: {len(phi)} potenziali | "
-        f"C++ Puro = {t_puro:.4f}s (I/O Python = {tempo_totale_python:.4f}s)"
-    )
+    if not quiet:
+        print(
+            f"  {algoritmo} completato: {len(phi)} potenziali | "
+            f"C++ Puro = {t_puro:.4f}s (I/O Python = {tempo_totale_python:.4f}s)"
+        )
     return phi, t_puro
