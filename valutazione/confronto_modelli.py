@@ -1,10 +1,9 @@
 """
 valutazione/confronto_modelli.py
 ===================================
-Confronto a runtime tra diverse versioni del modello ML (standard, loss
-custom, anelli, 6 anelli, regionale...), sulle stesse coppie source/target,
-misurando la riduzione % di nodi esplorati da A* rispetto a Dijkstra
-vanilla (calcolato una sola volta, indipendente dal modello).
+Confronto a runtime tra diverse versioni del modello ML.
+Supporta l'esportazione dei risultati sia aggregati per fascia (con deviazione standard) 
+sia visualizzati coppia per coppia per piccole demo.
 """
 
 import networkx as nx
@@ -20,39 +19,43 @@ from src.predizioni import genera_predizioni
 def confronta_modelli_runtime(
     G: nx.MultiDiGraph,
     modelli: dict[str, object],
-    coppie: list[tuple[str, object, object]],
+    coppie: list[tuple],
     bcf_bin: str,
     bcf_input_path: str,
     weight_attr: str = "travel_time_d",
     scale_factor: float = 10.0,
+    periodo_giorno: float | None = None,
 ) -> pd.DataFrame:
     """
-    Per ciascun modello in `modelli` ({nome: oggetto_modello}), esegue
-    l'intera pipeline su tutte le coppie e calcola la riduzione % di nodi
-    esplorati rispetto a Dijkstra vanilla.
-
-    NOTA: Dijkstra vanilla viene calcolato una sola volta per coppia
-    (indipendente dal modello), non ripetuto per ciascun modello.
-
-    Restituisce un DataFrame (righe = coppie, colonne = nomi modello,
-    + riga "Media" finale), pronto per tabella e grafico comparativo.
+    Esegue l'intera pipeline per ciascun modello.
+    Restituisce un DataFrame in formato 'tidy' (long format):
+    [modello, coppia, fascia, riduzione_pct, trovato]
     """
     nodi_esplorati_baseline = {}
-    for nome, source, target in coppie:
+    for dati_coppia in coppie:
+        nome = dati_coppia[0]
+        source = dati_coppia[1]
+        target = dati_coppia[2]
+        
         visitati = dijkstra_con_nodi_visitati(G, source, target, weight=weight_attr)
         nodi_esplorati_baseline[nome] = len(visitati)
         print(f"Dijkstra vanilla — {nome}: {len(visitati)} nodi esplorati")
     print()
 
-    risultati = {nome_modello: {} for nome_modello in modelli}
+    risultati = []
 
     for nome_modello, modello_corrente in modelli.items():
         print(f"=== Modello: {nome_modello} ===")
 
-        for nome, source, target in coppie:
+        for dati_coppia in coppie:
+            nome = dati_coppia[0]
+            source = dati_coppia[1]
+            target = dati_coppia[2]
+            fascia = dati_coppia[3] if len(dati_coppia) > 3 else "Globale"
+            
             try:
                 y_hat, y_hat_int = genera_predizioni(
-                    G, modello_corrente, target, scale_factor=scale_factor
+                    G, modello_corrente, target, scale_factor=scale_factor, periodo_giorno=periodo_giorno
                 )
                 archi, nodo_to_idx, art_idx, _ = costruisci_archi_ridotti(
                     G, y_hat_int, weight_attr=weight_attr
@@ -63,40 +66,63 @@ def confronta_modelli_runtime(
                     G, y_hat_int, phi, nodo_to_idx, weight_attr=weight_attr
                 )
 
-                visitati_astar = dijkstra_con_nodi_visitati(
+                visitati_sanato = dijkstra_con_nodi_visitati(
                     G_san, source, target, weight=weight_attr
                 )
-                n_astar = len(visitati_astar)
+                n_sanato = len(visitati_sanato)
                 n_baseline = nodi_esplorati_baseline[nome]
-                riduzione_pct = (1 - n_astar / n_baseline) * 100 if n_baseline > 0 else 0
+                riduzione_pct = (1 - n_sanato / n_baseline) * 100 if n_baseline > 0 else 0
 
-                risultati[nome_modello][nome] = riduzione_pct
-                print(
-                    f"  {nome}: {n_astar} nodi (baseline {n_baseline})  "
-                    f"→  {riduzione_pct:+.1f}%"
-                )
+                risultati.append({
+                    "modello": nome_modello,
+                    "coppia": nome,
+                    "fascia": fascia,
+                    "riduzione_pct": riduzione_pct,
+                    "trovato": True
+                })
+                print(f"  {nome}: {n_sanato} nodi (baseline {n_baseline}) → {riduzione_pct:+.1f}%")
 
             except Exception as ex:
                 print(f"  ❌ {nome}: {ex}")
-                risultati[nome_modello][nome] = None
+                risultati.append({
+                    "modello": nome_modello,
+                    "coppia": nome,
+                    "fascia": fascia,
+                    "riduzione_pct": np.nan,
+                    "trovato": False
+                })
         print()
 
-    df = pd.DataFrame(risultati)
-    nomi_coppie_ordine = [c[0] for c in coppie]
-    df = df.loc[nomi_coppie_ordine]
-    df.loc["Media"] = df.mean()
-
-    return df
+    return pd.DataFrame(risultati)
 
 
-def plot_confronto_modelli(df_confronto: pd.DataFrame, output_path: str = "confronto_modelli.png"):
+def aggrega_confronto_modelli(df_tidy: pd.DataFrame) -> pd.DataFrame:
     """
-    Grafico a barre raggruppate per confronta_modelli_runtime: una barra
-    per modello, raggruppata per coppia, valori positivi = miglioramento.
+    Calcola Media e Deviazione Standard della riduzione percentuale, 
+    raggruppate per Modello e Fascia.
+    """
+    df_ok = df_tidy[df_tidy["trovato"]].copy()
+    
+    agg = df_ok.groupby(["fascia", "modello"])["riduzione_pct"].agg(
+        media="mean",
+        std="std",
+        n_coppie="count"
+    ).reset_index()
+    
+    return agg
+
+
+def plot_confronto_modelli_singole_coppie(df_tidy: pd.DataFrame, output_path: str = "confronto_modelli_singoli.png"):
+    """
+    Grafico originale (legacy): una barra per modello, raggruppata per singola coppia.
+    Ottimo per visualizzazioni visive con POCHE coppie manuali (es. < 10).
+    Sconsigliato per benchmark stratificati su larga scala.
     """
     import matplotlib.pyplot as plt
 
-    df_plot = df_confronto.drop(index="Media", errors="ignore")
+    df_ok = df_tidy[df_tidy["trovato"]]
+    df_plot = df_ok.pivot(index="coppia", columns="modello", values="riduzione_pct")
+
     coppie_nomi = list(df_plot.index)
     modelli_nomi = list(df_plot.columns)
 
@@ -112,8 +138,60 @@ def plot_confronto_modelli(df_confronto: pd.DataFrame, output_path: str = "confr
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xticks(x + width * (len(modelli_nomi) - 1) / 2)
     ax.set_xticklabels(coppie_nomi, rotation=15, ha="right", fontsize=9)
-    ax.set_ylabel("Riduzione % nodi esplorati\n(A* vs Dijkstra vanilla)")
-    ax.set_title("Confronto tra versioni del modello ML")
+    ax.set_ylabel("Riduzione % nodi esplorati")
+    ax.set_title("Confronto tra Modelli (Singole Coppie)")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.show()
+    print(f"Grafico salvato come '{output_path}'")
+
+
+def plot_confronto_modelli_aggregato(df_tidy: pd.DataFrame, output_path: str = "confronto_modelli_aggregato.png"):
+    """
+    Nuovo Grafico Analitico: asse X diviso per Fasce Geografiche, 
+    barre rappresentano la Media, con linee verticali per la Deviazione Standard (yerr).
+    Ideale per benchmark stratificati con 100+ coppie.
+    """
+    import matplotlib.pyplot as plt
+
+    df_agg = aggrega_confronto_modelli(df_tidy)
+    
+    fasce_nomi = df_agg["fascia"].unique()
+    modelli_nomi = df_agg["modello"].unique()
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x = np.arange(len(fasce_nomi))
+    width = 0.8 / max(len(modelli_nomi), 1)
+    colori = plt.cm.Set2(np.linspace(0, 1, len(modelli_nomi)))
+
+    for j, (modello_nome, colore) in enumerate(zip(modelli_nomi, colori)):
+        # Estraiamo i valori per il modello corrente nell'ordine delle fasce
+        medie = []
+        stds = []
+        for fascia in fasce_nomi:
+            row = df_agg[(df_agg["modello"] == modello_nome) & (df_agg["fascia"] == fascia)]
+            if not row.empty:
+                medie.append(row["media"].values[0])
+                # Riempi i NaN della deviazione standard con 0 (succede se c'è solo 1 coppia)
+                std_val = row["std"].values[0]
+                stds.append(0 if pd.isna(std_val) else std_val)
+            else:
+                medie.append(0)
+                stds.append(0)
+                
+        ax.bar(
+            x + j * width, medie, width, 
+            yerr=stds, capsize=5, 
+            label=modello_nome, color=colore, alpha=0.9
+        )
+
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(x + width * (len(modelli_nomi) - 1) / 2)
+    ax.set_xticklabels(fasce_nomi, fontsize=10)
+    ax.set_ylabel("Riduzione Media % ± STD")
+    ax.set_title("Confronto tra Modelli (Medie e Deviazioni Standard per Fascia)")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(axis="y", alpha=0.3)
     plt.tight_layout()
