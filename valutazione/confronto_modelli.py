@@ -207,3 +207,44 @@ def plot_confronto_modelli_aggregato(df_tidy: pd.DataFrame, output_path: str = "
     plt.savefig(output_path, dpi=150)
     plt.show()
     print(f"Grafico salvato come '{output_path}'")
+
+
+def plot_confronto_modelli_boxplot(df_tidy: pd.DataFrame, output_path: str = "confronto_modelli_boxplot.png"):
+    """
+    Grafico tramite Boxplot: mostra Mediana, Quartili e Outlier (i "pallini").
+    Perfetto per dati con altissima varianza dove la deviazione standard esplode.
+    Richiede la libreria 'seaborn'.
+    """
+    import matplotlib.pyplot as plt
+    try:
+        import seaborn as sns
+    except ImportError:
+        print("La libreria 'seaborn' non è installata. Usa pip install seaborn.")
+        return
+
+    df_ok = df_tidy[df_tidy["trovato"]].copy()
+
+    plt.figure(figsize=(12, 6))
+    
+    # Crea il boxplot raggruppato per Fascia (asse X) e Modello (colori)
+    sns.boxplot(
+        data=df_ok,
+        x="fascia",
+        y="riduzione_pct",
+        hue="modello",
+        palette="Set2",
+        showfliers=True # Mostra gli outlier
+    )
+
+    plt.axhline(0, color="black", linewidth=0.8, linestyle="--")
+    plt.ylabel("Riduzione % nodi esplorati")
+    plt.xlabel("")
+    plt.title("Confronto tra Modelli - Distribuzione Completa (Boxplot)")
+    plt.grid(axis="y", alpha=0.3)
+    plt.legend(title="Modello", loc="lower right")
+    plt.tight_layout()
+    
+    plt.savefig(output_path, dpi=150)
+    plt.show()
+    print(f"Boxplot salvato come '{output_path}'")
+
