@@ -33,16 +33,19 @@ def confronta_modelli_runtime(
     [modello, coppia, fascia, riduzione_pct, trovato]
     """
     print(f"Calcolo baseline Dijkstra su {len(coppie)} coppie...")
+    from src.algoritmi import dijkstra_benchmark
     nodi_esplorati_baseline = {}
+    distanze_baseline = {}
     for i, dati_coppia in enumerate(coppie):
         nome = dati_coppia[0]
         source = dati_coppia[1]
         target = dati_coppia[2]
         
-        visitati = dijkstra_con_nodi_visitati(G, source, target, weight=weight_attr)
-        nodi_esplorati_baseline[nome] = len(visitati)
+        distanza, n_nodi = dijkstra_benchmark(G, source, target, weight=weight_attr)
+        nodi_esplorati_baseline[nome] = n_nodi
+        distanze_baseline[nome] = distanza
         if verbose:
-            print(f"Dijkstra vanilla — {nome}: {len(visitati)} nodi esplorati")
+            print(f"Dijkstra vanilla — {nome}: {n_nodi} nodi esplorati, costo {distanza}")
         elif (i + 1) % 100 == 0:
             print(f"  {i + 1}/{len(coppie)} baseline completate.")
     print()
@@ -62,11 +65,11 @@ def confronta_modelli_runtime(
                 y_hat, y_hat_int = genera_predizioni(
                     G, modello_corrente, target, scale_factor=scale_factor, periodo_giorno=periodo_giorno
                 )
-                archi, nodo_to_idx, art_idx, _ = costruisci_archi_ridotti(
+                archi, nodo_to_idx, art_idx, n_neg = costruisci_archi_ridotti(
                     G, y_hat_int, weight_attr=weight_attr
                 )
                 esporta_per_bcf(archi, art_idx, bcf_input_path)
-                phi, _ = esegui_bcf(bcf_bin, bcf_input_path, art_idx, len(G.nodes()))
+                phi, tempo_bcf_s = esegui_bcf(bcf_bin, bcf_input_path, art_idx, len(G.nodes()))
                 G_san = sanifica_grafo(
                     G, y_hat_int, phi, nodo_to_idx, weight_attr=weight_attr
                 )
@@ -77,12 +80,23 @@ def confronta_modelli_runtime(
                 n_sanato = len(visitati_sanato)
                 n_baseline = nodi_esplorati_baseline[nome]
                 riduzione_pct = (1 - n_sanato / n_baseline) * 100 if n_baseline > 0 else 0
+                
+                # Classificazione basata sulla distanza reale, non sul target
+                distanza = distanze_baseline[nome]
+                if distanza < 6000: # Meno di 10 minuti (se decimi di secondo)
+                    fascia_distanza = "1. Corto (<10 min)"
+                elif distanza < 18000: # Meno di 30 minuti
+                    fascia_distanza = "2. Medio (10-30 min)"
+                else:
+                    fascia_distanza = "3. Lungo (>30 min)"
 
                 risultati.append({
                     "modello": nome_modello,
                     "coppia": nome,
-                    "fascia": fascia,
+                    "fascia": fascia_distanza,
                     "riduzione_pct": riduzione_pct,
+                    "n_negativi": n_neg,
+                    "tempo_bcf_s": tempo_bcf_s,
                     "trovato": True
                 })
                 if verbose:
@@ -96,8 +110,10 @@ def confronta_modelli_runtime(
                 risultati.append({
                     "modello": nome_modello,
                     "coppia": nome,
-                    "fascia": fascia,
+                    "fascia": "N/A",
                     "riduzione_pct": np.nan,
+                    "n_negativi": np.nan,
+                    "tempo_bcf_s": np.nan,
                     "trovato": False
                 })
         print()
@@ -248,3 +264,67 @@ def plot_confronto_modelli_boxplot(df_tidy: pd.DataFrame, output_path: str = "co
     plt.show()
     print(f"Boxplot salvato come '{output_path}'")
 
+def plot_confronto_modelli_archi_negativi(df_tidy: pd.DataFrame, output_path: str = "confronto_modelli_archi_negativi.png"):
+    import matplotlib.pyplot as plt
+    try:
+        import seaborn as sns
+    except ImportError:
+        print("La libreria 'seaborn' non è installata. Usa pip install seaborn.")
+        return
+
+    df_ok = df_tidy[df_tidy["trovato"]].copy()
+
+    plt.figure(figsize=(12, 6))
+    sns.boxplot(
+        data=df_ok,
+        x="fascia",
+        y="n_negativi",
+        hue="modello",
+        palette="Set2",
+        showfliers=False # Meglio omettere outlier giganti per scalare bene
+    )
+    # Aggiungiamo scala logaritmica perché la differenza è ordini di grandezza
+    plt.yscale("symlog", linthresh=10)
+    
+    plt.ylabel("Numero di Archi Negativi Generati (Log Scale)")
+    plt.xlabel("")
+    plt.title("Archi Negativi pre-Sanazione (Misura della Consistenza)")
+    plt.grid(axis="y", alpha=0.3)
+    plt.legend(title="Modello", loc="upper left")
+    plt.tight_layout()
+    
+    plt.savefig(output_path, dpi=150)
+    plt.show()
+    print(f"Grafico salvato come '{output_path}'")
+
+def plot_confronto_modelli_tempo_bcf(df_tidy: pd.DataFrame, output_path: str = "confronto_modelli_tempo_bcf.png"):
+    import matplotlib.pyplot as plt
+    try:
+        import seaborn as sns
+    except ImportError:
+        print("La libreria 'seaborn' non è installata. Usa pip install seaborn.")
+        return
+
+    df_ok = df_tidy[df_tidy["trovato"]].copy()
+
+    plt.figure(figsize=(12, 6))
+    sns.boxplot(
+        data=df_ok,
+        x="fascia",
+        y="tempo_bcf_s",
+        hue="modello",
+        palette="Set2",
+        showfliers=False
+    )
+    plt.yscale("log")
+    
+    plt.ylabel("Tempo di Sanazione C++ BCF (secondi, Log Scale)")
+    plt.xlabel("")
+    plt.title("Tempi di Sanazione (Costo degli errori del modello ML)")
+    plt.grid(axis="y", alpha=0.3)
+    plt.legend(title="Modello", loc="upper left")
+    plt.tight_layout()
+    
+    plt.savefig(output_path, dpi=150)
+    plt.show()
+    print(f"Grafico salvato come '{output_path}'")

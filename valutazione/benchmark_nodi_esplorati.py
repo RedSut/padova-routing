@@ -53,6 +53,61 @@ def genera_coppie_stratificate(
     return coppie
 
 
+def genera_coppie_per_tipologia(
+    nodi_per_fascia: dict[int, list],
+    n_coppie_per_tipo: int = 100,
+    seed: int = 123,
+) -> list[tuple[str, object, object, str]]:
+    """
+    Genera coppie classificandole per "Tipologia Topologica" del viaggio:
+    - Tratte Urbane: Centro -> Centro (Fascia 0 -> Fascia 0)
+    - Tratte Miste: Coinvolgono la Periferia (Fascia 1) ma non la Provincia
+    - Tratte Lunghe: Coinvolgono la Provincia (Fascia 2)
+    """
+    random.seed(seed)
+    coppie = []
+    
+    nodi_centro = nodi_per_fascia.get(0, [])
+    nodi_periferia = nodi_per_fascia.get(1, [])
+    nodi_provincia = nodi_per_fascia.get(2, [])
+    tutti_nodi = nodi_centro + nodi_periferia + nodi_provincia
+    
+    if not nodi_centro or not tutti_nodi:
+        return []
+
+    # 1. Tratte Urbane (Centro -> Centro)
+    for i in range(n_coppie_per_tipo):
+        src = random.choice(nodi_centro)
+        tgt = random.choice(nodi_centro)
+        while src == tgt: tgt = random.choice(nodi_centro)
+        coppie.append((f"Urbana #{i + 1}", src, tgt, "Tratte Urbane"))
+        
+    # 2. Tratte Miste (Almeno uno in Periferia, l'altro in Centro/Periferia)
+    nodi_misti = nodi_centro + nodi_periferia
+    for i in range(n_coppie_per_tipo):
+        if random.random() > 0.5:
+            src = random.choice(nodi_periferia)
+            tgt = random.choice(nodi_misti)
+        else:
+            src = random.choice(nodi_misti)
+            tgt = random.choice(nodi_periferia)
+        while src == tgt: tgt = random.choice(nodi_misti)
+        coppie.append((f"Mista #{i + 1}", src, tgt, "Tratte Miste"))
+        
+    # 3. Tratte Lunghe (Almeno uno in Provincia)
+    for i in range(n_coppie_per_tipo):
+        if random.random() > 0.5:
+            src = random.choice(nodi_provincia)
+            tgt = random.choice(tutti_nodi)
+        else:
+            src = random.choice(tutti_nodi)
+            tgt = random.choice(nodi_provincia)
+        while src == tgt: tgt = random.choice(tutti_nodi)
+        coppie.append((f"Lunga #{i + 1}", src, tgt, "Tratte Lunghe"))
+        
+    return coppie
+
+
 def confronta_nodi_esplorati(
     G: nx.MultiDiGraph,
     model,
