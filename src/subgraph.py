@@ -1,9 +1,9 @@
 """
 src/subgraph.py
 ================
-Implementazione della proposta "Sub-Graph Routing" (dalla mail al
-prof. Scquizzato): invece di calcolare le predizioni su tutto il grafo,
-si estrae prima un sottografo nella zona di interesse tra source e
+Implementazione della strategia "Sub-Graph Routing": invece di calcolare 
+le predizioni su tutto il grafo, si estrae prima un sottografo nella zona 
+di interesse tra source e target, e si lavora solo su quello.
 target, e si lavora solo su quello.
 
 Due strategie di ritaglio geometrico:
@@ -61,8 +61,9 @@ def extract_subgraph_ellipse(
     padding_km — la definizione geometrica di un'ellisse.
 
     Approssimazione equirettangolare (sfera -> piano) per il calcolo delle
-    distanze in gradi: adeguata per aree non troppo estese (es. una città
-    o una provincia), non per distanze continentali.
+    distanze in gradi: perfettamente adeguata per scale cittadine o regionali
+    (es. l'intero Veneto). La leggera distorsione geometrica non inficia 
+    minimamente l'utilità del sottografo.
     """
     lat_s, lon_s = G.nodes[source]["y"], G.nodes[source]["x"]
     lat_t, lon_t = G.nodes[target]["y"], G.nodes[target]["x"]

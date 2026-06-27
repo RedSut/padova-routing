@@ -6,7 +6,7 @@ con cache delle coordinate e calcolo vettorizzato della distanza haversine.
 
 Compatibile con qualunque modello che implementi predict(X) e
 (opzionalmente) feature_names_in_ — sia scikit-learn nativo, sia il
-WrapperXGBoost definito in modelli/base.py.
+WrapperXGBoost definito in modelli/pipeline_unificata.py.
 """
 
 import networkx as nx
@@ -48,7 +48,7 @@ def genera_predizioni(
     G: nx.MultiDiGraph,
     model,
     target,
-    ora_del_giorno: float | None = None,
+    periodo_giorno: float | None = None,
     scale_factor: float = 10.0,
 ) -> tuple[dict, dict]:
     """
@@ -65,10 +65,6 @@ def genera_predizioni(
     usarla come potenziale di Bellman-Ford-Moore (dove costo_ridotto(u,v) =
     peso(u,v) + y_hat[u] - y_hat[v] deve restare piccolo lungo il percorso
     verso il target) serve il segno opposto: da qui il -y_arr.
-
-    Questa inversione e' stata validata empiricamente (vedi
-    valutazione/consistenza.py): il segno invertito produce sistematicamente
-    meno archi con costo ridotto negativo rispetto al segno diretto.
 
     Restituisce:
         y_hat     : {nodo -> float}  potenziali float originali
@@ -90,9 +86,9 @@ def genera_predizioni(
             "haversine_dist_m": aria_dist,
         }
     )
-    if ora_del_giorno is not None:
-        X["ora_giorno"] = ora_del_giorno
-        colonne.append("ora_giorno")
+    if periodo_giorno is not None:
+        X["periodo_giorno"] = periodo_giorno
+        colonne.append("periodo_giorno")
     X = X[colonne]
 
     if hasattr(model, "feature_names_in_"):

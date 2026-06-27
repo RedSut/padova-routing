@@ -4,13 +4,14 @@ valutazione/benchmark_precisione.py
 Confronto del tempo di esecuzione di BCF al variare della precisione di
 arrotondamento dei pesi (secondi/decimi/centesimi/millesimi di secondo).
 
-Risultato osservato in sviluppo: contro l'aspettativa teorica naive (più
-precisione = pesi più grandi = W maggiore = BCF più lento, per il termine
-log(nW) nella complessità), in pratica i SECONDI sono risultati i più
-LENTI: troppi archi con pesi piccoli/identici creano un caso patologico
-per la fase di low-diameter decomposition. I decimi sono già vicini al
-punto di saturazione del guadagno; centesimi/millesimi danno rendimenti
-fortemente decrescenti.
+Questo script serve a dimostrare empiricamente che il passaggio ai decimi 
+(travel_time_d) offre il compromesso perfetto: 
+1. Non perde la precisione dei tempi di percorrenza.
+2. Evita casi patologici del BCF: se si usano i "secondi" puri, si perdono
+   troppi decimali, molti archi ottengono pesi identici (es. tutti arrotondati a 1s o 2s)
+   e questo confonde l'algoritmo di scomposizione in cluster del BCF, rendendolo 
+   paradossalmente più lento.
+3. Centesimi e millesimi aumentano eccessivamente la scala dei pesi, rallentando BCF.
 """
 
 import networkx as nx
@@ -35,6 +36,7 @@ def benchmark_precisione(
     bcf_bin: str,
     bcf_input_path: str,
     configurazioni: list[dict] | None = None,
+    periodo_giorno: float | None = None,
 ) -> pd.DataFrame:
     """
     Esegue l'intera pipeline (predizioni -> BCF -> Dijkstra) per ciascuna
@@ -50,13 +52,17 @@ def benchmark_precisione(
 
     for cfg in configurazioni:
         print(f"--- Configurazione: {cfg['nome']} ---")
-        for nome, source, target in coppie:
+        for dati_coppia in coppie:
+            nome = dati_coppia[0]
+            source = dati_coppia[1]
+            target = dati_coppia[2]
+            
             try:
                 import time
 
                 t0 = time.time()
                 y_hat, y_hat_int = genera_predizioni(
-                    G, model, target, scale_factor=cfg["scale_factor"]
+                    G, model, target, scale_factor=cfg["scale_factor"], periodo_giorno=periodo_giorno
                 )
                 t_pred = time.time() - t0
 

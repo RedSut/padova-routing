@@ -40,6 +40,27 @@ def compila_bcf(bcf_dir: str = "/content/negative_weight_SSSP") -> str:
             ],
             check=True,
         )
+
+        # Iniezione del timer C++ nel codice clonato prima di compilarlo
+        queries_path = os.path.join(bcf_dir, "src", "queries.cpp")
+        if os.path.exists(queries_path):
+            with open(queries_path, "r") as f:
+                content = f.read()
+            if "high_resolution_clock" not in content:
+                patch = (
+                    "auto t_start = std::chrono::high_resolution_clock::now();\n"
+                    "        results.push_back(std::visit(run_query, query_data));\n"
+                    "        auto t_end = std::chrono::high_resolution_clock::now();\n"
+                    "        double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();\n"
+                    "        std::cout << \"time to compute potential mean = \" << elapsed_ms << \" ms\" << std::endl;"
+                )
+                content = content.replace("results.push_back(std::visit(run_query, query_data));", patch)
+                # Aggiungiamo <chrono> in cima se manca
+                if "<chrono>" not in content:
+                    content = "#include <chrono>\n" + content
+                with open(queries_path, "w") as f:
+                    f.write(content)
+
         print("Compilo (build.sh usa cmake + make)...")
         subprocess.run(["bash", "build.sh"], cwd=bcf_dir, check=True)
         print(f"✅ Compilato: {bcf_bin}")
@@ -72,6 +93,7 @@ def esegui_bcf(
     algoritmo: str = "BCF",
     diam_apprx: int = 0,
     verbose: bool = False,
+    quiet: bool = True,
 ) -> tuple[dict, float]:
     """
     Esegue l'implementazione BCF/GOR C++ e restituisce i potenziali.
@@ -150,8 +172,9 @@ def esegui_bcf(
         f"grezzo del C++."
     )
 
-    print(
-        f"  {algoritmo} OK: {len(phi)} potenziali | "
-        f"C++ Puro = {t_puro:.4f}s (I/O Python = {tempo_totale_python:.4f}s)"
-    )
+    if not quiet:
+        print(
+            f"  {algoritmo} completato: {len(phi)} potenziali | "
+            f"C++ Puro = {t_puro:.4f}s (I/O Python = {tempo_totale_python:.4f}s)"
+        )
     return phi, t_puro

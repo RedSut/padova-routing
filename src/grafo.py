@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore")
 
 def carica_ambiente(graphml_path: str, model_path: str | None = None):
     """
-    Carica il grafo OSMnx da file e (opzionalmente) un modello ML da joblib.
+    Carica il grafo OSMnx da file e (opzionalmente) un modello ML (supporta pipeline in .joblib o booster nativi in .json per XGBoost).
 
     Inizializza su ogni arco quattro rappresentazioni del peso, per evitare
     arrotondamenti ripetuti nelle sezioni successive:
@@ -55,7 +55,16 @@ def carica_ambiente(graphml_path: str, model_path: str | None = None):
 
     model = None
     if model_path is not None:
-        model = joblib.load(model_path)
+        if str(model_path).endswith(".json"):
+            import xgboost as xgb
+            from modelli.base import WrapperXGBoost
+            booster = xgb.Booster()
+            booster.load_model(model_path)
+            # Recupera le feature name dal booster salvato, se presenti, altrimenti usa un default
+            f_names = booster.feature_names if booster.feature_names else ["node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"]
+            model = WrapperXGBoost(booster, f_names)
+        else:
+            model = joblib.load(model_path)
 
     print(f"Grafo caricato: {len(G.nodes())} nodi, {len(G.edges())} archi")
     return G, model
@@ -176,18 +185,19 @@ def classifica_per_fasce(
 
     distanze_km = _haversine_vettoriale(lats, lons, lat_c, lon_c) / 1000.0
 
+    nodi_array = np.array(list(G.nodes()))
+
     nodi_per_fascia = {i: [] for i in range(len(fasce_km))}
     for i, (rmin, rmax) in enumerate(fasce_km):
         idx_validi = np.where((distanze_km >= rmin) & (distanze_km < rmax))[0]
-        nodi_per_fascia[i] = [nodi_lista[j] for j in idx_validi]
+        nodi_per_fascia[i] = nodi_array[idx_validi].tolist()
 
     return nodi_per_fascia
 
 
 def genera_traffico_realistico(
     G: nx.MultiDiGraph,
-    centro_lat: float,
-    centro_lon: float,
+    centri: list[tuple[float, float]],
     fattore_centro: float = 1.5,
     fattore_periferia: float = 0.8,
     raggio_centro_km: float = 3.0,
@@ -195,14 +205,17 @@ def genera_traffico_realistico(
 ) -> nx.MultiDiGraph:
     """
     Applica una penalizzazione radiale ai pesi degli archi, per simulare
-    traffico più intenso vicino al centro città. Usato per generare dati di
-    training più realistici di quanto offrirebbero i tempi "lisci" calcolati
+    traffico più intenso in prossimità di uno o più centri. Usato per generare 
+    dati di training più realistici di quanto offrirebbero i tempi "lisci" calcolati
     da OSMnx (basati solo su velocità massima e lunghezza dell'arco).
 
-    Ogni arco riceve un fattore moltiplicativo che decresce linearmente con
-    la distanza dal centro: fattore_centro vicino al centro, fattore_periferia
-    oltre raggio_centro_km. Aggiunge anche una piccola componente di rumore
-    casuale per evitare pesi perfettamente deterministici.
+    Per ogni centro nella lista, l'arco riceve un fattore moltiplicativo che 
+    decresce linearmente con la distanza dal quel centro: fattore_centro vicino 
+    al centro, fattore_periferia oltre raggio_centro_km. 
+    Se un arco si trova nell'intersezione tra due o più centri, viene applicato 
+    il fattore massimo (traffico peggiore).
+    Aggiunge anche una piccola componente di rumore casuale per evitare pesi 
+    perfettamente deterministici.
 
     Restituisce una COPIA del grafo con travel_time (e le sue varianti intere)
     aggiornate.
@@ -224,18 +237,21 @@ def genera_traffico_realistico(
         lat_v, lon_v = nodes_data[v]["y"], nodes_data[v]["x"]
         lat_mid, lon_mid = (lat_u + lat_v) / 2.0, (lon_u + lon_v) / 2.0
 
-        d_km = _haversine_vettoriale(
-            np.array([lat_mid]), np.array([lon_mid]), centro_lat, centro_lon
-        )[0] / 1000.0
+        fattore_max = fattore_periferia
 
-        if d_km <= raggio_centro_km:
-            frazione = d_km / raggio_centro_km
-            fattore = fattore_centro + (fattore_periferia - fattore_centro) * frazione
-        else:
-            fattore = fattore_periferia
+        for lat_c, lon_c in centri:
+            d_km = _haversine_vettoriale(
+                np.array([lat_mid]), np.array([lon_mid]), lat_c, lon_c
+            )[0] / 1000.0
+
+            if d_km <= raggio_centro_km:
+                frazione = d_km / raggio_centro_km
+                fattore = fattore_centro + (fattore_periferia - fattore_centro) * frazione
+                if fattore > fattore_max:
+                    fattore_max = fattore
 
         rumore = np.random.uniform(0.95, 1.05)
-        tt_nuovo = float(data["travel_time"]) * fattore * rumore
+        tt_nuovo = float(data["travel_time"]) * fattore_max * rumore
 
         data["travel_time"] = tt_nuovo
         data["travel_time_s"] = int(round(tt_nuovo))

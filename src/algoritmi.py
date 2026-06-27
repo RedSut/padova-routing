@@ -3,8 +3,7 @@ src/algoritmi.py
 =================
 Algoritmi di ricerca del cammino minimo usati per il benchmark: Dijkstra
 con tracciamento dei nodi esplorati (per confrontare Dijkstra vanilla con
-A* = Dijkstra sul grafo sanato), e Bellman-Ford come alternativa pura
-Python al motore C++ BCF.
+Dijkstra eseguito sul grafo sanato).
 """
 
 import heapq
@@ -22,8 +21,8 @@ def dijkstra_con_nodi_visitati(
     l'algoritmo — non solo se trova il percorso.
 
     Eseguito sul grafo originale = Dijkstra vanilla.
-    Eseguito sul grafo sanato (dopo sanifica_grafo) = equivalente ad A*
-    sul grafo originale con euristica pari ai potenziali predetti.
+    Eseguito sul grafo sanato (dopo sanifica_grafo) = esplorazione guidata
+    che sfrutta i potenziali predetti matematicamente.
 
     Restituisce l'insieme dei nodi visitati (incluso il target, se
     raggiunto). len(risultato) e' la metrica chiave per il confronto.
@@ -69,37 +68,3 @@ def dijkstra_benchmark(
     return distanza, len(visited)
 
 
-def bellman_ford_python(archi: list, super_idx: int) -> tuple[dict, float]:
-    """
-    Bellman-Ford con early stopping, usato come alternativa pura Python al
-    motore C++ BCF. Calcola le distanze dal super-nodo (super_idx) a tutti
-    gli altri nodi, usando direttamente la lista di archi già costruita da
-    grafo.costruisci_archi_ridotti (che include già gli archi del
-    super-nodo verso tutti i nodi reali, con peso 0).
-
-    Restituisce (phi: {idx -> distanza}, tempo_secondi).
-    """
-    edges, nodes = [], set()
-    for linea in archi:
-        parti = linea.split()
-        if len(parti) == 3:
-            u, v, w = int(parti[0]), int(parti[1]), int(parti[2])
-            edges.append((u, v, w))
-            nodes.update([u, v])
-
-    dist = {n: float("inf") for n in nodes}
-    dist[super_idx] = 0
-
-    t0 = time.time()
-    for i in range(len(nodes) - 1):
-        changed = False
-        for u, v, w in edges:
-            if dist[u] != float("inf") and dist[u] + w < dist[v]:
-                dist[v] = dist[u] + w
-                changed = True
-        if not changed:
-            print(f"  BF stabilizzato all'iterazione {i + 1}/{len(nodes) - 1}")
-            break
-
-    phi = {k: v for k, v in dist.items() if k != super_idx and v != float("inf")}
-    return phi, time.time() - t0

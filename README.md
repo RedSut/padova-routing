@@ -3,20 +3,14 @@
 Progetto finale — Advanced Topics in Algorithms
 Nicole Mietto, Davide Sut
 
-Applicazione dell'approccio "algorithms with predictions" (Bernstein,
-Nanongkai, Wulff-Nilsen — *Faster Fundamental Graph Algorithms via
-Learned Predictions*) al problema del Faster Shortest Path su una rete
-stradale reale (Padova), con tre varianti esplorate:
+Applicazione dell'approccio "algorithms with predictions" (ispirato al lavoro originale di Bernstein, Nanongkai, Wulff-Nilsen — *Faster Fundamental Graph Algorithms via Learned Predictions*) al problema del Faster Shortest Path su una rete stradale reale (Padova). 
+Nello specifico, al posto della formulazione originaria BNW, utilizziamo la velocizzazione empirica proposta da Cassis, Karrenbauer, Nusser e Rinaldi (2025) tramite il loro motore **BCF**, che si è dimostrata sensibilmente più veloce.
 
-1. **A\* con potenziali predetti**: un modello ML predice i potenziali
-   duali, usati per "sanare" i pesi negativi del grafo (via
-   [BCF — Cassis, Karrenbauer, Nusser, Rinaldi 2025](https://github.com/PaoloLRinaldi/negative_weight_SSSP)),
-   rendendo Dijkstra sul grafo sanato equivalente ad A* sul grafo
-   originale.
-2. **Sub-Graph Routing**: le predizioni sono limitate a un sottografo
-   (rettangolo o ellisse) tra source e target.
-3. **Interpolazione spaziale**: le predizioni sono calcolate solo su un
-   campione di nodi "ancora", e interpolate (Delaunay) per i restanti.
+Nel nostro lavoro abbiamo esplorato le seguenti applicazioni/varianti:
+
+1. **Dijkstra sul grafo sanato con diversi modelli ML**: applicazione dell'algoritmo addestrando varie architetture di predizione (modello standard, ad anelli, ecc.) per prevedere i potenziali duali necessari al motore BCF per sanare il grafo.
+2. **Sub-Graph Routing**: limitazione della ricerca a un sottografo geometrico (rettangolo o ellisse) tra source e target, riducendo lo spazio di esplorazione a priori.
+3. **Interpolazione spaziale**: calcolo delle predizioni ML solo su un campione di nodi "ancora" e interpolazione (Delaunay) per i restanti, tecnica usata congiuntamente al Sub-Graph Routing sull'ellisse.
 
 ## Struttura del repository
 
@@ -115,20 +109,13 @@ su Colab.
 
 ## Note metodologiche principali
 
-- **Precisione dei pesi**: si usano i decimi di secondo (`travel_time_d`)
-  come compromesso tra precisione e velocità del motore BCF — vedi
-  `valutazione/benchmark_precisione.py` per la misura sperimentale che
-  motiva questa scelta (i secondi interi sono risultati i più LENTI, non
-  i più rapidi, contro l'aspettativa teorica naive).
-- **Segno dei potenziali**: `src/predizioni.py` inverte il segno della
-  predizione del modello per ottenere potenziali consistenti con la
-  sanazione Bellman-Ford-Moore. Verificato empiricamente in
-  `valutazione/consistenza.py`.
+- **Precisione dei pesi**: si usano i decimi di secondo (`travel_time_d`). Mantenere i decimi permette di distinguere maggiormente le strade (soprattutto quelle più brevi) e introduce meno arrotondamenti anomali rispetto all'uso dei secondi interi. Dal punto di vista empirico, questo approccio si è rivelato preferibile per l'accuratezza e le performance del routing finale.
+- **Segno dei potenziali**: `src/predizioni.py` inverte il segno della predizione del modello per ottenere potenziali iniziali compatibili con la convenzione richiesta dalla fase di sanazione del motore BCF. Anche se i costi ridotti iniziali possono includere pesi negativi, questa accortezza permette all'algoritmo di completare correttamente la sanazione. Il comportamento è verificato empiricamente in `valutazione/consistenza.py`.
 - **MAE basso ≠ buona euristica**: un modello con MAE/R² ottimi può
-  comunque produrre un'euristica inconsistente nei rami che A* esplora e
-  scarta (anche con consistenza perfetta sul percorso ottimale finale).
+  comunque produrre un'euristica inconsistente nei rami esplorati e
+  scartati (anche con consistenza perfetta sul percorso ottimale finale).
   Vedi `valutazione/consistenza.verifica_consistenza_nodi_visitati`.
 - **Loss custom**: `modelli/base.crea_loss_consistenza` penalizza
   esplicitamente le violazioni di consistenza durante il training
-  XGBoost, migliorando sensibilmente il comportamento di A* rispetto a
+  XGBoost, migliorando sensibilmente il comportamento di Dijkstra sul grafo sanato rispetto a
   un modello allenato con MSE puro.
