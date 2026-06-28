@@ -208,7 +208,7 @@ def _prepara_struttura_vicini_universale(G_periodi: dict, df_train: pd.DataFrame
     
     df_train = df_train.copy()
     
-    return df_train, x_vicino, peso_arco_arricino
+    return df_train, x_vicino, peso_arco_arr
 
 
 def allena_modello_unificato(
