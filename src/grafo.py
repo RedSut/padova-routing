@@ -71,8 +71,9 @@ def carica_ambiente(graphml_path: str, model_path: str | None = None):
 
 
 def costruisci_archi_ridotti(
-    G: nx.MultiDiGraph, y_hat_int: dict, weight_attr: str = "travel_time_d"
-) -> tuple[list, dict, int, int]:
+    G: nx.MultiDiGraph, y_hat_int: dict, weight_attr: str = "travel_time_d",
+    return_max_violazione: bool = False
+) -> tuple:
     """
     Costruisce la lista di archi ridotti (formato testo "u v w") per il
     motore BCF, a partire dai potenziali predetti y_hat_int.
@@ -86,6 +87,7 @@ def costruisci_archi_ridotti(
         nodo_to_idx  : {nodo OSM -> indice intero 0-based}
         super_idx    : indice del super-nodo (= N)
         n_negativi   : numero di archi con costo ridotto < 0
+        (Opzionale) max_violazione: magnitudo dell'arco più negativo
     """
     nodi_lista = list(G.nodes())
     nodo_to_idx = {n: i for i, n in enumerate(nodi_lista)}
@@ -94,6 +96,7 @@ def costruisci_archi_ridotti(
 
     archi = []
     n_negativi = 0
+    max_violazione = 0.0
 
     for u, v, key, data in G.edges(keys=True, data=True):
         if u == v:
@@ -104,11 +107,15 @@ def costruisci_archi_ridotti(
 
         if costo < 0:
             n_negativi += 1
+            if abs(costo) > max_violazione:
+                max_violazione = abs(costo)
         archi.append(f"{nodo_to_idx[u]} {nodo_to_idx[v]} {costo}\n")
 
     for idx in range(N):
         archi.append(f"{super_idx} {idx} 0\n")
 
+    if return_max_violazione:
+        return archi, nodo_to_idx, super_idx, n_negativi, max_violazione
     return archi, nodo_to_idx, super_idx, n_negativi
 
 
