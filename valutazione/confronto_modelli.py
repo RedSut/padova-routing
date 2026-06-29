@@ -322,3 +322,53 @@ def plot_confronto_modelli_tempo_bcf(df_tidy: pd.DataFrame, output_path: str = "
     plt.savefig(output_path, dpi=150)
     plt.show()
     print(f"Grafico salvato come '{output_path}'")
+
+
+def confronta_modello_traffico_vs_statico(
+    G: nx.MultiDiGraph,
+    model_statico,
+    model_traffico,
+    coppie: list[tuple],
+    bcf_bin: str,
+    bcf_input_path: str,
+    nome_statico: str = "Statico",
+    nome_traffico: str = "Traffico",
+    periodo_giorno_test: int = 2,
+    weight_attr: str = "travel_time_d",
+    scale_factor: float = 10.0,
+) -> pd.DataFrame:
+    """
+    Confronta un modello statico (senza la feature periodo_giorno) con un
+    modello traffico (allenato con periodo_giorno) sulle stesse coppie.
+
+    NOTA TECNICA: confronta_modelli_runtime accetta un solo periodo_giorno
+    condiviso da tutti i modelli passati in un'unica chiamata — ma il
+    modello statico non ha quella feature, quindi passare periodo_giorno
+    insieme a quel modello romperebbe la predizione (mismatch di colonne
+    in XGBoost). Questa funzione esegue perciò due chiamate separate (una
+    per modello, con il periodo_giorno corretto per ciascuno) e unisce i
+    risultati in un unico DataFrame pronto per tabella/grafico comparativo.
+
+    Restituisce un DataFrame in formato "tidy" (long format), compatibile
+    con plot_confronto_modelli_boxplot e plot_confronto_modelli_singole_coppie.
+    """
+    df_statico = confronta_modelli_runtime(
+        G, {nome_statico: model_statico}, coppie, bcf_bin, bcf_input_path,
+        weight_attr=weight_attr, scale_factor=scale_factor, periodo_giorno=None,
+    )
+
+    df_traffico = confronta_modelli_runtime(
+        G, {nome_traffico: model_traffico}, coppie, bcf_bin, bcf_input_path,
+        weight_attr=weight_attr, scale_factor=scale_factor,
+        periodo_giorno=periodo_giorno_test,
+    )
+
+    df_confronto = pd.concat([df_statico, df_traffico], ignore_index=True)
+
+    print(f"\n=== Sintesi: {nome_statico} vs {nome_traffico} (periodo={periodo_giorno_test}) ===")
+    print(
+        df_confronto.groupby("modello")["riduzione_pct"]
+        .agg(["mean", "median", "std"]).round(1)
+    )
+
+    return df_confronto
