@@ -26,7 +26,12 @@ def confronta_modelli_runtime(
     scale_factor: float = 10.0,
     periodo_giorno: float | None = None,
     verbose: bool = False,
+    cache_dir: str | None = None,
+    return_max_violazione: bool = False,
 ) -> pd.DataFrame:
+    import os
+    if cache_dir is not None and not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
     """
     Esegue l'intera pipeline per ciascun modello.
     Restituisce un DataFrame in formato 'tidy' (long format):
@@ -54,6 +59,19 @@ def confronta_modelli_runtime(
 
     for nome_modello, modello_corrente in modelli.items():
         print(f"=== Modello: {nome_modello} ===")
+        
+        # Gestione Cache
+        cache_path = None
+        if cache_dir is not None:
+            safe_name = nome_modello.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            cache_path = os.path.join(cache_dir, f"risultati_{safe_name}.csv")
+            if os.path.exists(cache_path):
+                print(f"  [CACHE] Caricamento risultati esistenti da {cache_path}")
+                df_cache = pd.read_csv(cache_path)
+                risultati.extend(df_cache.to_dict('records'))
+                continue
+                
+        risultati_modello = []
 
         for i, dati_coppia in enumerate(coppie):
             nome = dati_coppia[0]
@@ -65,9 +83,16 @@ def confronta_modelli_runtime(
                 y_hat, y_hat_int = genera_predizioni(
                     G, modello_corrente, target, scale_factor=scale_factor, periodo_giorno=periodo_giorno
                 )
-                archi, nodo_to_idx, art_idx, n_neg = costruisci_archi_ridotti(
-                    G, y_hat_int, weight_attr=weight_attr
-                )
+                if return_max_violazione:
+                    archi, nodo_to_idx, art_idx, n_neg, max_violazione = costruisci_archi_ridotti(
+                        G, y_hat_int, weight_attr=weight_attr, return_max_violazione=True
+                    )
+                else:
+                    archi, nodo_to_idx, art_idx, n_neg = costruisci_archi_ridotti(
+                        G, y_hat_int, weight_attr=weight_attr, return_max_violazione=False
+                    )
+                    max_violazione = np.nan
+                    
                 esporta_per_bcf(archi, art_idx, bcf_input_path)
                 phi, tempo_bcf_s = esegui_bcf(bcf_bin, bcf_input_path, art_idx, len(G.nodes()))
                 G_san = sanifica_grafo(
@@ -81,12 +106,13 @@ def confronta_modelli_runtime(
                 n_baseline = nodi_esplorati_baseline[nome]
                 riduzione_pct = (1 - n_sanato / n_baseline) * 100 if n_baseline > 0 else 0
                 
-                risultati.append({
+                risultati_modello.append({
                     "modello": nome_modello,
                     "coppia": nome,
                     "fascia": fascia,
                     "riduzione_pct": riduzione_pct,
                     "n_negativi": n_neg,
+                    "max_violazione": max_violazione,
                     "tempo_bcf_s": tempo_bcf_s,
                     "trovato": True
                 })
@@ -98,15 +124,23 @@ def confronta_modelli_runtime(
             except Exception as ex:
                 if verbose:
                     print(f"  ❌ {nome}: {ex}")
-                risultati.append({
+                risultati_modello.append({
                     "modello": nome_modello,
                     "coppia": nome,
                     "fascia": "N/A",
                     "riduzione_pct": np.nan,
                     "n_negativi": np.nan,
+                    "max_violazione": np.nan,
                     "tempo_bcf_s": np.nan,
                     "trovato": False
                 })
+        
+        # Salvataggio in cache se richiesta
+        if cache_path is not None:
+            pd.DataFrame(risultati_modello).to_csv(cache_path, index=False)
+            print(f"  [CACHE] Risultati salvati in {cache_path}")
+            
+        risultati.extend(risultati_modello)
         print()
 
     return pd.DataFrame(risultati)
