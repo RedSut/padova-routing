@@ -14,19 +14,26 @@ import numpy as np
 import pandas as pd
 
 # Cache globale delle coordinate dei nodi, popolata alla prima chiamata per
-# ogni grafo (identificato da id(G)). Evita di rileggere lat/lon da
-# G.nodes(data=True) con un ciclo Python ad ogni chiamata di genera_predizioni.
-_coord_cache = {"graph_id": None, "nodi_ordine": None, "lats": None, "lons": None}
+# ogni grafo. La chiave combina id(G) con il numero di nodi: id() da solo
+# non e' sufficiente, perche' Python può riassegnare lo stesso id a un nuovo
+# oggetto dopo che il precedente e' stato garbage-collected (es. un G.copy()
+# temporaneo eliminato a fine funzione) — in quel caso un controllo basato
+# solo su id() potrebbe restituire silenziosamente coordinate del grafo
+# sbagliato. Aggiungere len(G.nodes()) alla chiave rileva la stragrande
+# maggioranza di questi casi (due grafi diversi raramente hanno lo stesso
+# numero esatto di nodi), senza il costo di un controllo più approfondito.
+_coord_cache = {"cache_key": None, "nodi_ordine": None, "lats": None, "lons": None}
 
 
 def _get_coord_arrays(G: nx.MultiDiGraph):
     """Restituisce (nodi_ordine, lats, lons) come array numpy, con caching."""
-    if _coord_cache["graph_id"] != id(G):
+    cache_key = (id(G), len(G.nodes()))
+    if _coord_cache["cache_key"] != cache_key:
         nodes_data = G.nodes(data=True)
         nodi_ordine = list(G.nodes())
         lats = np.array([nodes_data[n]["y"] for n in nodi_ordine])
         lons = np.array([nodes_data[n]["x"] for n in nodi_ordine])
-        _coord_cache.update(graph_id=id(G), nodi_ordine=nodi_ordine, lats=lats, lons=lons)
+        _coord_cache.update(cache_key=cache_key, nodi_ordine=nodi_ordine, lats=lats, lons=lons)
     return _coord_cache["nodi_ordine"], _coord_cache["lats"], _coord_cache["lons"]
 
 
