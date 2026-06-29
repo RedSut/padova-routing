@@ -268,17 +268,21 @@ def plot_confronto_modelli_archi_negativi(df_tidy: pd.DataFrame, output_path: st
 
     df_ok = df_tidy[df_tidy["trovato"]].copy()
 
+    # Evitiamo il problema degli zeri nel log scale impostando il minimo a 1
+    df_plot = df_ok.copy()
+    df_plot["n_negativi"] = np.maximum(df_plot["n_negativi"], 1)
+
     plt.figure(figsize=(12, 6))
     sns.boxplot(
-        data=df_ok,
+        data=df_plot,
         x="fascia",
         y="n_negativi",
         hue="modello",
         palette="Set2",
         showfliers=False # Meglio omettere outlier giganti per scalare bene
     )
-    # Aggiungiamo scala logaritmica perché la differenza è ordini di grandezza
-    plt.yscale("symlog", linthresh=10)
+    # Usiamo log standard che formatta perfettamente gli assi Y di default
+    plt.yscale("log")
     
     plt.ylabel("Numero di Archi Negativi Generati (Log Scale)")
     plt.xlabel("")

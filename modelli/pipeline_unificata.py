@@ -150,10 +150,10 @@ def genera_dataset_unificato(
     return df_totale, G_periodi
 
 
-def _prepara_struttura_vicini_universale(G_periodi: dict, df_train: pd.DataFrame, weight_attr: str):
+def _prepara_struttura_vicini_universale(G_periodi: dict, df_train: pd.DataFrame, weight_attr: str, k_vicini: int = 4):
     """
     Estrae le features dei vicini per calcolare la loss di consistenza.
-    Adatta la lettura del peso dell'arco al grafo corretto (se è attivo il traffico).
+    Valuta fino a K_VICINI contemporaneamente per applicare la Bellman Equation (Minimo).
     """
     divisore = {
         "travel_time_s": 1.0, "travel_time_d": 10.0,
@@ -162,54 +162,60 @@ def _prepara_struttura_vicini_universale(G_periodi: dict, df_train: pd.DataFrame
 
     usa_traffico = "periodo_giorno" in df_train.columns
 
-    vicino_per_riga, peso_arco_per_riga = [], []
+    vicino_per_riga = {k: [] for k in range(k_vicini)}
+    peso_arco_per_riga = {k: [] for k in range(k_vicini)}
+
     for row in df_train.itertuples():
         nodo_id = row.node_id
-        
-        # Recupera il grafo corretto in base al periodo (oppure None se no traffico)
+
         periodo = int(row.periodo_giorno) if usa_traffico else None
         G_p = G_periodi[periodo]
 
         vicini = list(G_p.successors(nodo_id))
-        if vicini:
-            v = vicini[0]
-            data_arco = G_p.get_edge_data(nodo_id, v)
-            key = list(data_arco.keys())[0]
-            peso = data_arco[key].get(weight_attr, 0) / divisore
-            vicino_per_riga.append(v)
-            peso_arco_per_riga.append(peso)
-        else:
-            vicino_per_riga.append(None)
-            peso_arco_per_riga.append(np.inf)
+        for k in range(k_vicini):
+            if k < len(vicini):
+                v = vicini[k]
+                data_arco = G_p.get_edge_data(nodo_id, v)
+                key = list(data_arco.keys())[0]
+                peso = data_arco[key].get(weight_attr, 0) / divisore
+                vicino_per_riga[k].append(v)
+                peso_arco_per_riga[k].append(peso)
+            else:
+                vicino_per_riga[k].append(None)
+                peso_arco_per_riga[k].append(np.inf)
 
     primo_grafo = list(G_periodi.values())[0]
-    nodes_data = primo_grafo.nodes(data=True) 
-    
-    vicino_lat = np.array([nodes_data[v]["y"] if v is not None else np.nan for v in vicino_per_riga])
-    vicino_lon = np.array([nodes_data[v]["x"] if v is not None else np.nan for v in vicino_per_riga])
-    
-    haversine_vicino = _haversine_vettoriale(
-        vicino_lat, vicino_lon,
-        df_train["target_lat"].values, df_train["target_lon"].values,
-    )
+    nodes_data = primo_grafo.nodes(data=True)
 
-    dati_x_vicino = {
-        "node_lat": vicino_lat, 
-        "node_lon": vicino_lon,
-        "target_lat": df_train["target_lat"].values,
-        "target_lon": df_train["target_lon"].values,
-        "haversine_dist_m": haversine_vicino,
-    }
-    
-    if usa_traffico:
-        dati_x_vicino["periodo_giorno"] = df_train["periodo_giorno"].values
+    dati_x_vicino = {}
+    peso_arco_matrice = []
+
+    for k in range(k_vicini):
+        vicino_lat = np.array([nodes_data[v]["y"] if v is not None else np.nan for v in vicino_per_riga[k]])
+        vicino_lon = np.array([nodes_data[v]["x"] if v is not None else np.nan for v in vicino_per_riga[k]])
+
+        haversine_vicino = _haversine_vettoriale(
+            vicino_lat, vicino_lon,
+            df_train["target_lat"].values, df_train["target_lon"].values,
+        )
+
+        dati_x_vicino[f"node_lat_{k}"] = vicino_lat
+        dati_x_vicino[f"node_lon_{k}"] = vicino_lon
+        dati_x_vicino[f"target_lat_{k}"] = df_train["target_lat"].values
+        dati_x_vicino[f"target_lon_{k}"] = df_train["target_lon"].values
+        dati_x_vicino[f"haversine_dist_m_{k}"] = haversine_vicino
+
+        if usa_traffico:
+            dati_x_vicino[f"periodo_giorno_{k}"] = df_train["periodo_giorno"].values
+
+        peso_arco_matrice.append(peso_arco_per_riga[k])
 
     x_vicino = pd.DataFrame(dati_x_vicino)
-    
+    peso_arco_arr = np.array(peso_arco_matrice).T  # Shape: (N, k_vicini)
+
     df_train = df_train.copy()
-    df_train["peso_arco_s"] = peso_arco_per_riga
-    
-    return df_train, x_vicino
+
+    return df_train, x_vicino, peso_arco_arr
 
 
 def allena_modello_unificato(
@@ -221,13 +227,14 @@ def allena_modello_unificato(
     test_size: float = 0.2,
     seed: int = 42,
     ogni_n_round_print: int = 50,
+    k_vicini: int = 4,
 ) -> tuple[xgb.Booster, list[str], dict]:
     """
-    Allena il modello XGBoost universale. 
+    Allena il modello XGBoost universale.
     L'architettura delle feature si adatta automaticamente ai dati generati.
     """
-    print("Recupero vicini per calcolo consistenza topologica...")
-    df_train, x_vicino = _prepara_struttura_vicini_universale(G_periodi, df_train, weight_attr)
+    print(f"Recupero vicini per calcolo consistenza topologica (k_vicini={k_vicini})...")
+    df_train, x_vicino, peso_arco_matrice = _prepara_struttura_vicini_universale(G_periodi, df_train, weight_attr, k_vicini)
 
     # Auto-rilevamento delle feature
     feature_cols = ["node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"]
@@ -243,14 +250,16 @@ def allena_modello_unificato(
     X_train, X_test = X_full.loc[idx_train], X_full.loc[idx_test]
     y_train, y_test = y_full.loc[idx_train], y_full.loc[idx_test]
 
-    peso_arco_arr = df_train.loc[idx_train, "peso_arco_s"].values
+    pos_train = X_full.index.get_indexer(idx_train)
+    peso_arco_arr = peso_arco_matrice[pos_train]
+
     x_vicino_train = x_vicino.loc[idx_train].reset_index(drop=True)
 
     dtrain = xgb.DMatrix(X_train, label=y_train)
     dtest = xgb.DMatrix(X_test, label=y_test)
 
     loss_fn, callback_cls = crea_loss_consistenza(
-        peso_arco_arr, x_vicino_train, lambda_consistenza=lambda_consistenza
+        peso_arco_arr, x_vicino_train, lambda_consistenza=lambda_consistenza, k_vicini=k_vicini
     )
 
     print(f"\nTraining XGBoost con loss custom (lambda={lambda_consistenza})...")
@@ -297,38 +306,11 @@ class WrapperXGBoost:
 
 
 def crea_loss_consistenza(
-    peso_arco_arr: np.ndarray, x_vicino_train, lambda_consistenza: float = 0.5
+    peso_arco_arr: np.ndarray, x_vicino_train, lambda_consistenza: float = 0.5, k_vicini: int = 4
 ):
     """
-    Factory che costruisce una loss custom per XGBoost, parametrizzata sui
-    dati del training corrente. Restituisce (loss_fn, callback_class) pronti
-    da passare a xgb.train(obj=loss_fn, callbacks=[callback_class()]).
-
-    Formulazione (per ogni esempio i, un nodo u_i rispetto a un target):
-
-        L_i = 0.5*(h(u_i) - tempo_reale_i)^2
-            + lambda * max(0, h(u_i) - w(u_i,v_i) - h(v_i))^2
-
-    dove v_i e' un vicino noto di u_i (un arco reale del grafo), w(u_i,v_i)
-    e' il peso reale di quell'arco, e h(v_i) e' la predizione CORRENTE del
-    modello per il vicino (aggiornata ad ogni round di boosting tramite il
-    callback restituito).
-
-    Gradiente e hessiano analitici (verificati numericamente con differenze
-    finite prima dell'uso):
-        dL/dh(u_i)  = (h(u_i) - tempo_reale_i) + 2*lambda*violazione_i
-        d2L/dh(u_i)^2 = 1 + 2*lambda   [se violazione_i > 0, altrimenti 1]
-
-    Parametri:
-        peso_arco_arr      : array (n_esempi,) con il peso reale dell'arco
-                             u_i -> v_i per ogni riga del train set
-        x_vicino_train     : DataFrame (n_esempi, n_feature) con le feature
-                             del vicino v_i per ogni riga (stesso ordine di
-                             peso_arco_arr)
-        lambda_consistenza : peso della penalità di consistenza nella loss
-
-    Restituisce:
-        (loss_fn, AggiornaBoosterCallback)
+    Factory che costruisce una loss custom per XGBoost basata sull'Equazione di Bellman.
+    Valuta la disuguaglianza triangolare sul MINIMO tra i vicini (fino a k_vicini).
     """
     import time
 
@@ -338,15 +320,27 @@ def crea_loss_consistenza(
         y_true = dtrain.get_label()
 
         booster_corrente = state["booster_attuale"]
-        if booster_corrente is not None:
-            d_vicino = xgb.DMatrix(x_vicino_train.fillna(0))
-            h_vicino = booster_corrente.predict(d_vicino)
-        else:
-            h_vicino = np.zeros_like(y_pred)  # primo round: nessun riferimento ancora
 
-        soglia = peso_arco_arr + h_vicino
-        violazione = np.maximum(0, y_pred - soglia)
-        violazione[np.isinf(soglia)] = 0  # righe senza vicino: penalità disattivata
+        soglia_minima = np.inf * np.ones_like(y_pred)
+
+        for k in range(k_vicini):
+            peso_k = peso_arco_arr[:, k]
+
+            # Estrai colonne del vicino k e togli il suffisso _k
+            cols_k = [c for c in x_vicino_train.columns if c.endswith(f"_{k}")]
+            df_k = x_vicino_train[cols_k].rename(columns=lambda x: x[:-2]).fillna(0)
+
+            if booster_corrente is not None:
+                d_vicino_k = xgb.DMatrix(df_k)
+                h_vicino_k = booster_corrente.predict(d_vicino_k)
+            else:
+                h_vicino_k = np.zeros_like(y_pred)
+
+            soglia_k = peso_k + h_vicino_k
+            soglia_minima = np.minimum(soglia_minima, soglia_k)
+
+        violazione = np.maximum(0, y_pred - soglia_minima)
+        violazione[np.isinf(soglia_minima)] = 0  # ignora righe senza alcun vicino
 
         grad = (y_pred - y_true) + 2 * lambda_consistenza * violazione
         hess = np.ones_like(y_pred) + 2 * lambda_consistenza * (violazione > 0).astype(float)
