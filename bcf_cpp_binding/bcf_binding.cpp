@@ -101,6 +101,92 @@ int bcf_shortest_path(
     return 1;
 }
 
+/**
+ * Come bcf_shortest_path, ma ricostruisce ANCHE i predecessori del
+ * cammino minimo, evitando di dover rifare un secondo Dijkstra in Python
+ * per estrarre il percorso (che vanificherebbe il guadagno di velocità
+ * del binding diretto — verificato empiricamente: l'Opzione "distanze
+ * pure + secondo Dijkstra Python" risultava PIU' LENTA della vecchia
+ * pipeline, 0.86x invece di uno speedup).
+ *
+ * Strategia: bcf::BCF() non espone i predecessori del suo Dijkstra
+ * interno, e replicare la sua logica di calcolo dei potenziali sarebbe
+ * complesso e rischioso (usa decomposizione in SCC e altre strutture
+ * non tutte esposte pubblicamente). Sfruttiamo invece una proprietà
+ * standard dei cammini minimi: se distanza[u] + peso_ORIGINALE(u,v) ==
+ * distanza[v], allora u è un predecessore valido di v sul cammino
+ * minimo. Basta un singolo passaggio O(E) sugli archi con i pesi
+ * ORIGINALI (non quelli ridotti dalle predizioni, che servono solo per
+ * il calcolo interno di BCF) — molto più rapido di un secondo Dijkstra.
+ *
+ * Parametri aggiuntivi rispetto a bcf_shortest_path:
+ *   edge_weights_originali : pesi REALI degli archi (travel_time_d,
+ *                            prima di sommare le predizioni h(u)-h(v)),
+ *                            stesso ordine/lunghezza di edge_heads/edge_tails
+ *   out_predecessors       : array PREALLOCATO dal chiamante, lunghezza
+ *                            n_nodes. Riempito con l'indice del
+ *                            predecessore di ciascun nodo sul cammino
+ *                            minimo dal source; -1 per il source stesso
+ *                            o per nodi non raggiunti.
+ */
+int bcf_shortest_path_with_predecessors(
+    int64_t n_nodes,
+    const int64_t* edge_heads,
+    const int64_t* edge_tails,
+    const int64_t* edge_weights,
+    const int64_t* edge_weights_originali,
+    int64_t n_edges,
+    int64_t source,
+    int64_t* out_distances,
+    int64_t* out_predecessors
+) {
+    std::vector<FullEdge> full_edges;
+    full_edges.reserve(static_cast<size_t>(n_edges));
+    for (int64_t i = 0; i < n_edges; ++i) {
+        full_edges.emplace_back(
+            static_cast<NodeID>(edge_heads[i]),
+            static_cast<NodeID>(edge_tails[i]),
+            static_cast<Distance>(edge_weights[i])
+        );
+    }
+
+    Graph graph(static_cast<NodeID>(n_nodes), full_edges);
+
+    std::optional<Distances> result = BCF(graph, static_cast<NodeID>(source));
+
+    if (!result.has_value()) {
+        return 0;
+    }
+
+    const Distances& distances = result.value();
+    for (int64_t i = 0; i < n_nodes; ++i) {
+        out_distances[i] = distances[static_cast<size_t>(i)];
+        out_predecessors[i] = -1;
+    }
+
+    const int64_t INFTY = static_cast<int64_t>(c::infty);
+
+    // Ricostruzione predecessori: un solo passaggio lineare sugli archi,
+    // usando i pesi ORIGINALI (non quelli ridotti passati per il calcolo
+    // di BCF). Se più archi soddisfano l'uguaglianza per lo stesso nodo
+    // v, teniamo il primo trovato — è comunque un cammino minimo valido,
+    // non serve necessariamente essere quello "canonico".
+    for (int64_t i = 0; i < n_edges; ++i) {
+        int64_t u = edge_heads[i];
+        int64_t v = edge_tails[i];
+        int64_t w_orig = edge_weights_originali[i];
+
+        if (out_distances[u] == INFTY) continue;
+        if (out_predecessors[v] != -1) continue;  // già trovato un predecessore valido
+
+        if (out_distances[u] + w_orig == out_distances[v]) {
+            out_predecessors[v] = u;
+        }
+    }
+
+    return 1;
+}
+
 }  // extern "C"
 
 /*
