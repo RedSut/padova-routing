@@ -177,13 +177,29 @@ int bcf_shortest_path_with_predecessors(
     // (edge_weights, non pesi originali — vedi spiegazione sopra).
     // Se più archi soddisfano l'uguaglianza per lo stesso nodo v,
     // teniamo il primo trovato — è comunque un cammino minimo valido.
+    //
+    // FIX (bug scoperto empiricamente su una coppia specifica, causava un
+    // comportamento anomalo/blocco): il controllo iniziale proteggeva solo
+    // out_distances[u] == INFTY, non out_distances[v]. Se v non è
+    // raggiunto, out_distances[v] vale INFTY = INT64_MAX. La somma
+    // out_distances[u] + w può quindi andare in OVERFLOW DI INTERI A 64
+    // BIT (undefined behavior in C++) quando confrontata implicitamente
+    // contro un valore vicino a INT64_MAX — comportamento imprevedibile a
+    // seconda del compilatore/ottimizzazioni, non solo un risultato
+    // numerico errato. Aggiunta protezione esplicita su out_distances[v]
+    // e un controllo di overflow prima della somma.
     for (int64_t i = 0; i < n_edges; ++i) {
         int64_t u = edge_heads[i];
         int64_t v = edge_tails[i];
         int64_t w = edge_weights[i];
 
         if (out_distances[u] == INFTY) continue;
+        if (out_distances[v] == INFTY) continue;  // FIX: proteggi anche v
         if (out_predecessors[v] != -1) continue;  // già trovato un predecessore valido
+
+        // FIX: evita l'overflow di out_distances[u] + w prima di calcolarlo
+        if (w > 0 && out_distances[u] > INFTY - w) continue;
+        if (w < 0 && out_distances[u] < -INFTY - w) continue;
 
         if (out_distances[u] + w == out_distances[v]) {
             out_predecessors[v] = u;
