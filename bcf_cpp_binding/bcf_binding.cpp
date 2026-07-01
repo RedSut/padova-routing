@@ -22,6 +22,13 @@
 #include "graph.h"
 #include "algorithms.h"
 
+// La funzione BCF(Graph&, NodeID) e' definita in algorithms.cpp ma NON e'
+// dichiarata in algorithms.h (solo gli enum SSSPAlg::BCF / NegCycleAlg::BCF
+// ci sono, che sono cose diverse). Serve quindi dichiararla qui esplicitamente
+// prima di poterla chiamare — e' una funzione libera, non in un namespace,
+// come confermato dal sorgente (algorithms.cpp, riga ~155).
+std::optional<Distances> BCF(Graph& graph, NodeID source);
+
 extern "C" {
 
 /**
