@@ -149,3 +149,50 @@ def archi_to_numpy(archi: list) -> tuple:
         np.array(tails, dtype=np.int64),
         np.array(weights, dtype=np.int64),
     )
+
+
+def costruisci_archi_per_ctypes(G, y_hat_int: dict, weight_attr: str = "travel_time_d"):
+    """
+    Variante di src.grafo.costruisci_archi_ridotti pensata per il binding
+    diretto (esegui_bcf_ctypes): NON aggiunge il super-nodo artificiale.
+
+    Perché: bcf_shortest_path() nella libreria C++ calcola già un
+    single-source shortest path dal source passato esplicitamente — non
+    serve più un super-nodo con archi entranti nulli verso tutti i nodi
+    per ottenere i potenziali "in un colpo solo" (quello serviva nella
+    vecchia pipeline subprocess, che poi doveva rifare un secondo Dijkstra
+    separato in Python).
+
+    IMPORTANTE: il super-nodo, se usato come `source` in
+    bcf_shortest_path(), produce risultati SBAGLIATI (verificato
+    empiricamente: un nodo con grado entrante zero finisce isolato nella
+    propria componente durante la decomposizione in SCC interna a BCF,
+    con un potenziale calcolato in modo degenere). Con questa funzione,
+    passare invece l'indice del nodo SOURCE REALE della query come
+    `source` a esegui_bcf_ctypes().
+
+    Restituisce:
+        archi       : lista di stringhe "u v w\\n" (SENZA super-nodo)
+        nodo_to_idx : {nodo OSM -> indice intero 0-based}
+        n_nodi      : numero di nodi reali nel grafo (= len(archi_totali) per out_distances)
+        n_negativi  : numero di archi con costo ridotto < 0
+    """
+    nodi_lista = list(G.nodes())
+    nodo_to_idx = {n: i for i, n in enumerate(nodi_lista)}
+    n_nodi = len(nodi_lista)
+
+    archi = []
+    n_negativi = 0
+
+    for u, v, key, data in G.edges(keys=True, data=True):
+        if u == v:
+            continue
+
+        tempo_base = data.get(weight_attr, 0)
+        costo = tempo_base + y_hat_int[u] - y_hat_int[v]
+
+        if costo < 0:
+            n_negativi += 1
+        archi.append(f"{nodo_to_idx[u]} {nodo_to_idx[v]} {costo}\n")
+
+    return archi, nodo_to_idx, n_nodi, n_negativi
