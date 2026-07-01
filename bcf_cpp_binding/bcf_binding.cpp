@@ -113,28 +113,34 @@ int bcf_shortest_path(
  * interno, e replicare la sua logica di calcolo dei potenziali sarebbe
  * complesso e rischioso (usa decomposizione in SCC e altre strutture
  * non tutte esposte pubblicamente). Sfruttiamo invece una proprietà
- * standard dei cammini minimi: se distanza[u] + peso_ORIGINALE(u,v) ==
- * distanza[v], allora u è un predecessore valido di v sul cammino
- * minimo. Basta un singolo passaggio O(E) sugli archi con i pesi
- * ORIGINALI (non quelli ridotti dalle predizioni, che servono solo per
- * il calcolo interno di BCF) — molto più rapido di un secondo Dijkstra.
+ * standard dei cammini minimi: se distanza[u] + peso(u,v) == distanza[v],
+ * allora u è un predecessore valido di v sul cammino minimo.
+ *
+ * IMPORTANTE (corretto dopo un bug iniziale): il valore restituito da
+ * bcf::BCF() come distances[v] è la somma dei pesi RIDOTTI (quelli
+ * passati in edge_weights, cioe' w_originale + h(u) - h(v)) lungo il
+ * cammino minimo — non la somma dei pesi originali. Questo si dimostra
+ * dall'identita' telescopica dei potenziali nella normalizzazione finale
+ * di BCF: distances[i] = distances[i] + potential[i] - potential[source].
+ * La ricostruzione dei predecessori deve quindi confrontare
+ * distanza[u] + edge_weights[i] (pesi RIDOTTI) == distanza[v], non i
+ * pesi originali — con i pesi originali il confronto fallisce non
+ * appena l'euristica h non e' ammissibile (verificato: 38.96% dei nodi
+ * violano l'ammissibilita' su Padova), perche' in quel caso la somma dei
+ * pesi ridotti lungo il cammino minimo NON coincide con la somma dei
+ * pesi originali lungo lo stesso cammino, arco per arco.
  *
  * Parametri aggiuntivi rispetto a bcf_shortest_path:
- *   edge_weights_originali : pesi REALI degli archi (travel_time_d,
- *                            prima di sommare le predizioni h(u)-h(v)),
- *                            stesso ordine/lunghezza di edge_heads/edge_tails
- *   out_predecessors       : array PREALLOCATO dal chiamante, lunghezza
- *                            n_nodes. Riempito con l'indice del
- *                            predecessore di ciascun nodo sul cammino
- *                            minimo dal source; -1 per il source stesso
- *                            o per nodi non raggiunti.
+ *   out_predecessors : array PREALLOCATO dal chiamante, lunghezza
+ *                      n_nodes. Riempito con l'indice del predecessore
+ *                      di ciascun nodo sul cammino minimo dal source;
+ *                      -1 per il source stesso o per nodi non raggiunti.
  */
 int bcf_shortest_path_with_predecessors(
     int64_t n_nodes,
     const int64_t* edge_heads,
     const int64_t* edge_tails,
     const int64_t* edge_weights,
-    const int64_t* edge_weights_originali,
     int64_t n_edges,
     int64_t source,
     int64_t* out_distances,
@@ -167,19 +173,19 @@ int bcf_shortest_path_with_predecessors(
     const int64_t INFTY = static_cast<int64_t>(c::infty);
 
     // Ricostruzione predecessori: un solo passaggio lineare sugli archi,
-    // usando i pesi ORIGINALI (non quelli ridotti passati per il calcolo
-    // di BCF). Se più archi soddisfano l'uguaglianza per lo stesso nodo
-    // v, teniamo il primo trovato — è comunque un cammino minimo valido,
-    // non serve necessariamente essere quello "canonico".
+    // usando gli STESSI pesi RIDOTTI passati per il calcolo di BCF
+    // (edge_weights, non pesi originali — vedi spiegazione sopra).
+    // Se più archi soddisfano l'uguaglianza per lo stesso nodo v,
+    // teniamo il primo trovato — è comunque un cammino minimo valido.
     for (int64_t i = 0; i < n_edges; ++i) {
         int64_t u = edge_heads[i];
         int64_t v = edge_tails[i];
-        int64_t w_orig = edge_weights_originali[i];
+        int64_t w = edge_weights[i];
 
         if (out_distances[u] == INFTY) continue;
         if (out_predecessors[v] != -1) continue;  // già trovato un predecessore valido
 
-        if (out_distances[u] + w_orig == out_distances[v]) {
+        if (out_distances[u] + w == out_distances[v]) {
             out_predecessors[v] = u;
         }
     }
