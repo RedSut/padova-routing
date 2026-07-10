@@ -44,6 +44,7 @@ def genera_dataset_regionale(
     sorgenti_per_fascia_per_target: int = 100,
     weight_attr: str = "travel_time_d",
     seed: int = 42,
+    usa_feature_avanzate: bool = False,
 ) -> pd.DataFrame:
     """
     Genera un dataset multicentrico: per ogni centro in `centri`, applica
@@ -52,6 +53,9 @@ def genera_dataset_regionale(
     Default fasce_km: 3 fasce pensate per la scala regionale (0-10km,
     10-30km, 30-80km), diverse da quelle usate per il solo centro di
     Padova (che usa raggi più piccoli, 0-5/5-15/15-60km).
+
+    usa_feature_avanzate: propagato a genera_dataset_anelli per ogni
+    centro — vedi src/feature_avanzate.py.
     """
     if fasce_km is None:
         fasce_km = [(0, 10), (10, 30), (30, 80)]
@@ -68,6 +72,7 @@ def genera_dataset_regionale(
             sorgenti_per_fascia_per_target=sorgenti_per_fascia_per_target,
             weight_attr=weight_attr,
             seed=seed,
+            usa_feature_avanzate=usa_feature_avanzate,
         )
         df_centro["centro"] = nome_centro
         dataframes.append(df_centro)
