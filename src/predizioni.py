@@ -13,6 +13,11 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from src.feature_avanzate import (
+    estrai_feature_avanzate_vettoriale,
+    modello_richiede_feature_avanzate,
+)
+
 # Cache globale delle coordinate dei nodi, popolata alla prima chiamata per
 # ogni grafo. La chiave combina id(G) con il numero di nodi: id() da solo
 # non e' sufficiente, perche' Python può riassegnare lo stesso id a un nuovo
@@ -81,18 +86,23 @@ def genera_predizioni(
     target_lat, target_lon = nodes_data[target]["y"], nodes_data[target]["x"]
 
     nodi_ordine, lats, lons = _get_coord_arrays(G)
-    aria_dist = _haversine_vettoriale(lats, lons, target_lat, target_lon)
 
-    colonne = ["node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"]
-    X = pd.DataFrame(
-        {
-            "node_lat": lats,
-            "node_lon": lons,
-            "target_lat": target_lat,
-            "target_lon": target_lon,
-            "haversine_dist_m": aria_dist,
-        }
-    )
+    if modello_richiede_feature_avanzate(model):
+        X = estrai_feature_avanzate_vettoriale(G, nodi_ordine, target, nodes_data)
+        colonne = list(X.columns)
+    else:
+        aria_dist = _haversine_vettoriale(lats, lons, target_lat, target_lon)
+        colonne = ["node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"]
+        X = pd.DataFrame(
+            {
+                "node_lat": lats,
+                "node_lon": lons,
+                "target_lat": target_lat,
+                "target_lon": target_lon,
+                "haversine_dist_m": aria_dist,
+            }
+        )
+
     if periodo_giorno is not None:
         X["periodo_giorno"] = periodo_giorno
         colonne.append("periodo_giorno")
