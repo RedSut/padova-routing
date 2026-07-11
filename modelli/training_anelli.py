@@ -161,14 +161,29 @@ def _prepara_struttura_vicini(
     usa_feature_avanzate: bool = False,
 ):
     """
-    Per ogni riga di df_train (identificata da node_id), trova un arco
-    reale uscente (node_id -> vicino) e ne registra peso e feature del
-    vicino. Necessario per calcolare la penalità di consistenza nella loss
-    custom (vedi modelli/base.py) — la loss confronta h(nodo) con
-    h(vicino), quindi il vicino deve avere ESATTAMENTE le stesse feature
-    del nodo (comprese quelle avanzate, se il modello le usa: confrontare
-    un nodo con grado/gerarchia/heading con un vicino a cui mancano
-    sarebbe incoerente).
+    Per ogni riga di df_train (identificata da node_id), trova TUTTI gli
+    archi reali uscenti (node_id -> vicino) e ne registra peso e feature.
+    Necessario per calcolare la penalità di consistenza nella loss custom
+    (vedi modelli/base.py) — la loss confronta h(nodo) con h(vicino) per
+    OGNI arco uscente, non solo uno a caso: controllare un solo vicino
+    (il primo per ordine di inserimento OSM, senza significato) lascia la
+    maggior parte degli archi di un nodo di grado >1 mai verificati durante
+    il training, qualunque sia lambda_consistenza.
+
+    Restituisce in formato "lungo" (una riga per ARCO, non per nodo):
+        df_train        : invariato (nessuna colonna peso_arco_s aggiunta
+                           qui, la trovi indirettamente tramite row_id_arr)
+        x_vicini_lungo   : DataFrame (n_archi_totali, n_feature) feature
+                           del vicino per ciascun arco
+        peso_archi_lungo : array (n_archi_totali,) peso reale di ciascun
+                           arco
+        row_id_arr       : array (n_archi_totali,) indice POSIZIONALE
+                           (0..len(df_train)-1) della riga di df_train a
+                           cui ciascun arco appartiene
+
+    Nodi senza archi uscenti (vicoli ciechi) non compaiono in row_id_arr:
+    la loss li tratta correttamente (nessuna penalità di consistenza per
+    loro, dato che non hanno da chi essere "spinti" verso la consistenza).
 
     NOTA: usa direttamente df_train['node_id'] (e non
     ox.distance.nearest_nodes, che costa ~1s per chiamata ed e' impraticabile
@@ -179,34 +194,35 @@ def _prepara_struttura_vicini(
         "travel_time_c": 100.0, "travel_time_m": 1000.0,
     }.get(weight_attr, 10.0)
 
-    vicino_per_riga, peso_arco_per_riga = [], []
-    for nodo_id in df_train["node_id"]:
-        vicini = list(G.successors(nodo_id))
-        if vicini:
-            v = vicini[0]
-            data_arco = G.get_edge_data(nodo_id, v)
-            key = list(data_arco.keys())[0]
-            peso = data_arco[key].get(weight_attr, 0) / divisore
-            vicino_per_riga.append(v)
-            peso_arco_per_riga.append(peso)
-        else:
-            vicino_per_riga.append(None)
-            peso_arco_per_riga.append(np.inf)
-
     nodes_data = G.nodes(data=True)
+    node_ids = df_train["node_id"].to_numpy()
+    target_ids = df_train["target_id"].to_numpy()
 
+    # --- Passo 1: per ogni riga di training, elenco TUTTI gli archi uscenti ---
+    row_id_list, vicino_list, peso_list = [], [], []
+    for row_id, (nodo_id, target_id) in enumerate(zip(node_ids, target_ids)):
+        for _, vicino, key, data in G.edges(nodo_id, keys=True, data=True):
+            row_id_list.append(row_id)
+            vicino_list.append(vicino)
+            peso_list.append(data.get(weight_attr, 0) / divisore)
+
+    row_id_arr = np.array(row_id_list, dtype=int)
+    peso_archi_lungo = np.array(peso_list, dtype=float)
+
+    if len(row_id_arr) == 0:
+        # nessun nodo del dataset ha archi uscenti (caso limite/degenerato)
+        colonne = FEATURE_COLS_AVANZATE if usa_feature_avanzate else FEATURE_COLS_BASE
+        return df_train, pd.DataFrame(columns=colonne), peso_archi_lungo, row_id_arr
+
+    # --- Passo 2: feature dei vicini, raggruppate per target (il target
+    #     cambia da riga a riga in df_train) ---
     if usa_feature_avanzate:
-        # Il target cambia da riga a riga in df_train (dataset con molti
-        # target diversi): estrai_feature_avanzate_vettoriale lavora con UN
-        # target alla volta, quindi raggruppiamo le righe per target_id e
-        # chiamiamo la funzione una volta per gruppo (non riga per riga).
-        target_ids = df_train["target_id"].values
+        target_per_arco = target_ids[row_id_arr]
         gruppi: dict = {}
-        for idx, (v, t) in enumerate(zip(vicino_per_riga, target_ids)):
-            if v is not None:
-                gruppi.setdefault(t, []).append((idx, v))
+        for idx, (v, t) in enumerate(zip(vicino_list, target_per_arco)):
+            gruppi.setdefault(t, []).append((idx, v))
 
-        righe_vicino: list = [None] * len(df_train)
+        righe_vicino: list = [None] * len(vicino_list)
         for t, lista in gruppi.items():
             indici, vicini_gruppo = zip(*lista)
             df_feat_gruppo = estrai_feature_avanzate_vettoriale(
@@ -214,35 +230,24 @@ def _prepara_struttura_vicini(
             )
             for pos, idx in enumerate(indici):
                 righe_vicino[idx] = df_feat_gruppo.iloc[pos].to_dict()
-
-        for idx in range(len(df_train)):
-            if righe_vicino[idx] is None:  # nodi senza vicino (vicoli ciechi)
-                righe_vicino[idx] = {c: np.nan for c in FEATURE_COLS_AVANZATE}
-
-        x_vicino = pd.DataFrame(righe_vicino)
+        x_vicini_lungo = pd.DataFrame(righe_vicino)
     else:
-        vicino_lat = np.array(
-            [nodes_data[v]["y"] if v is not None else np.nan for v in vicino_per_riga]
-        )
-        vicino_lon = np.array(
-            [nodes_data[v]["x"] if v is not None else np.nan for v in vicino_per_riga]
-        )
+        vicino_lat = np.array([nodes_data[v]["y"] for v in vicino_list])
+        vicino_lon = np.array([nodes_data[v]["x"] for v in vicino_list])
+        target_lat_per_arco = df_train["target_lat"].to_numpy()[row_id_arr]
+        target_lon_per_arco = df_train["target_lon"].to_numpy()[row_id_arr]
         haversine_vicino = _haversine_vettoriale(
-            vicino_lat, vicino_lon,
-            df_train["target_lat"].values, df_train["target_lon"].values,
+            vicino_lat, vicino_lon, target_lat_per_arco, target_lon_per_arco
         )
-        x_vicino = pd.DataFrame(
+        x_vicini_lungo = pd.DataFrame(
             {
                 "node_lat": vicino_lat, "node_lon": vicino_lon,
-                "target_lat": df_train["target_lat"].values,
-                "target_lon": df_train["target_lon"].values,
+                "target_lat": target_lat_per_arco, "target_lon": target_lon_per_arco,
                 "haversine_dist_m": haversine_vicino,
             }
         )
 
-    df_train = df_train.copy()
-    df_train["peso_arco_s"] = peso_arco_per_riga
-    return df_train, x_vicino
+    return df_train, x_vicini_lungo, peso_archi_lungo, row_id_arr
 
 
 def allena_modello_anelli(
@@ -250,6 +255,8 @@ def allena_modello_anelli(
     df_train: pd.DataFrame,
     weight_attr: str = "travel_time_d",
     lambda_consistenza: float = 0.5,
+    lambda_iniziale: float | None = None,
+    lambda_finale: float | None = None,
     n_round: int = 300,
     test_size: float = 0.2,
     seed: int = 42,
@@ -258,6 +265,11 @@ def allena_modello_anelli(
     """
     Allena un modello XGBoost con loss custom di consistenza, su un
     dataset già generato da genera_dataset_anelli.
+
+    Se lambda_iniziale e lambda_finale sono entrambi forniti, usa lo
+    schema di penalità CRESCENTE (interpolazione lineare tra i due lungo
+    n_round) invece di lambda_consistenza fissa -- vedi la docstring di
+    crea_loss_consistenza per il perché.
 
     Restituisce:
         booster        : il modello XGBoost allenato
@@ -271,37 +283,47 @@ def allena_modello_anelli(
     from src.feature_avanzate import FEATURE_COLS_EXTRA
     usa_feature_avanzate = all(c in df_train.columns for c in FEATURE_COLS_EXTRA)
 
-    print("Recupero vicini per calcolo consistenza...")
-    df_train, x_vicino = _prepara_struttura_vicini(
-        G, df_train, weight_attr, usa_feature_avanzate=usa_feature_avanzate
-    )
-    print(
-        f"Vicini trovati per "
-        f"{(df_train['peso_arco_s'] != np.inf).sum()}/{len(df_train)} righe."
-    )
-
     feature_cols = FEATURE_COLS_AVANZATE if usa_feature_avanzate else [
         "node_lat", "node_lon", "target_lat", "target_lon", "haversine_dist_m"
     ]
     print(f"Feature usate ({len(feature_cols)}): {feature_cols}")
-    X_full = df_train[feature_cols]
-    y_full = df_train["tempo_reale_s"]
 
     idx_train, idx_test = train_test_split(
         df_train.index, test_size=test_size, random_state=seed
     )
 
-    X_train, X_test = X_full.loc[idx_train], X_full.loc[idx_test]
-    y_train, y_test = y_full.loc[idx_train], y_full.loc[idx_test]
+    # Split PRIMA di calcolare la struttura dei vicini: ci serve solo per
+    # la parte di training (la loss di consistenza si applica solo li'),
+    # e l'indice va resettato a 0..n_train-1 perche' row_id_arr (in
+    # _prepara_struttura_vicini) e' posizionale, non basato sull'indice
+    # originale del dataset completo.
+    df_train_split = df_train.loc[idx_train].reset_index(drop=True)
+    df_test_split = df_train.loc[idx_test].reset_index(drop=True)
 
-    peso_arco_arr = df_train.loc[idx_train, "peso_arco_s"].values
-    x_vicino_train = x_vicino.loc[idx_train].reset_index(drop=True)
+    print("Recupero vicini (TUTTI gli archi uscenti) per calcolo consistenza...")
+    df_train_split, x_vicini_lungo, peso_archi_lungo, row_id_arr = _prepara_struttura_vicini(
+        G, df_train_split, weight_attr, usa_feature_avanzate=usa_feature_avanzate
+    )
+    n_nodi_con_vicini = len(np.unique(row_id_arr)) if len(row_id_arr) else 0
+    print(
+        f"Vicini trovati per {n_nodi_con_vicini}/{len(df_train_split)} nodi di training "
+        f"({len(row_id_arr)} archi totali controllati, media "
+        f"{len(row_id_arr)/max(n_nodi_con_vicini,1):.1f} archi/nodo)."
+    )
+
+    X_train = df_train_split[feature_cols]
+    y_train = df_train_split["tempo_reale_s"]
+    X_test = df_test_split[feature_cols]
+    y_test = df_test_split["tempo_reale_s"]
 
     dtrain = xgb.DMatrix(X_train, label=y_train)
     dtest = xgb.DMatrix(X_test, label=y_test)
 
     loss_fn, callback_cls = crea_loss_consistenza(
-        peso_arco_arr, x_vicino_train, lambda_consistenza=lambda_consistenza
+        peso_archi_lungo, x_vicini_lungo, lambda_consistenza=lambda_consistenza,
+        row_id_arr=row_id_arr, n_esempi=len(df_train_split),
+        lambda_iniziale=lambda_iniziale, lambda_finale=lambda_finale,
+        n_round_totali=n_round,
     )
 
     print(f"\nTraining XGBoost con loss custom (lambda={lambda_consistenza})...")

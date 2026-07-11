@@ -58,37 +58,57 @@ def _primo_tag(valore, default=None):
 def precalcola_attributi_stradali(G: nx.MultiDiGraph):
     """
     Precalcola, UNA VOLTA per grafo (con cache), tre dict {nodo: valore}:
-    grado, road_score (gerarchia della prima strada uscente), bearing_strada
-    (l'orientamento di quella strada, se OSMnx l'ha calcolato in fase di
-    download — altrimenti None, e a valle si usera' l'angolo ideale stesso,
-    cioe' nessuna penalita' di deviazione per quel nodo).
+    grado, road_score, bearings_strada.
 
-    Nodi senza archi uscenti (vicoli ciechi) ottengono road_score=0.
+    road_score = MASSIMO tra la gerarchia di TUTTI gli archi uscenti dal
+    nodo (non il primo): rappresenta "la strada migliore disponibile da
+    qui", una proprieta' del nodo indipendente dal target — quindi ancora
+    precalcolabile una volta per grafo. Usare il primo arco (ordine di
+    inserimento OSM, senza significato geografico) dava una feature quasi
+    priva di segnale (verificato: correlazione ~0.02 col tempo reale).
+
+    bearings_strada = LISTA di tutti i bearing degli archi uscenti (non
+    solo il primo): la deviazione di heading corretta richiede scegliere,
+    per ogni query, l'arco uscente piu' allineato verso IL TARGET (che
+    cambia a ogni query, quindi non e' precalcolabile una volta per tutte
+    — vedi calcola_heading_deviation_vettoriale) — qui prepariamo solo i
+    dati grezzi (i bearing), il calcolo vero e proprio avviene a query-time.
+
+    Nodi senza archi uscenti (vicoli ciechi) ottengono road_score=0 e
+    bearings_strada=[].
     """
     cache_key = (id(G), len(G.nodes()), len(G.edges()))
     if _attributi_cache["cache_key"] == cache_key:
-        return _attributi_cache["grado"], _attributi_cache["road_score"], _attributi_cache["bearing_strada"]
+        return (
+            _attributi_cache["grado"],
+            _attributi_cache["road_score"],
+            _attributi_cache["bearing_strada"],
+        )
 
     grado = dict(G.degree())
     road_score = {}
-    bearing_strada = {}
+    bearings_strada = {}
     for nodo in G.nodes():
-        primo_arco = None
-        for _, _, data in G.out_edges(nodo, data=True):
-            primo_arco = data
-            break
-        if primo_arco is None:
+        archi = list(G.out_edges(nodo, data=True))
+        if not archi:
             road_score[nodo] = 0
-            bearing_strada[nodo] = None
+            bearings_strada[nodo] = []
             continue
-        hw = _primo_tag(primo_arco.get("highway"), "unclassified")
-        road_score[nodo] = GERARCHIA_STRADE.get(hw, 1)
-        bearing_strada[nodo] = _primo_tag(primo_arco.get("bearing"), None)
+        scores = []
+        bearings = []
+        for _, _, data in archi:
+            hw = _primo_tag(data.get("highway"), "unclassified")
+            scores.append(GERARCHIA_STRADE.get(hw, 1))
+            b = _primo_tag(data.get("bearing"), None)
+            if b is not None:
+                bearings.append(b)
+        road_score[nodo] = max(scores)
+        bearings_strada[nodo] = bearings
 
     _attributi_cache.update(
-        cache_key=cache_key, grado=grado, road_score=road_score, bearing_strada=bearing_strada
+        cache_key=cache_key, grado=grado, road_score=road_score, bearing_strada=bearings_strada
     )
-    return grado, road_score, bearing_strada
+    return grado, road_score, bearings_strada
 
 
 def calcola_bearing_vett(lat1, lon1, lat2, lon2):
@@ -117,14 +137,33 @@ def _haversine_locale(lats, lons, target_lat, target_lon):
     return R * 2.0 * np.arcsin(np.sqrt(a))
 
 
+def _deviazione_minima(bearings, angolo_ideale):
+    """Deviazione angolare minima tra angolo_ideale e uno qualsiasi dei
+    bearing in `bearings` (la strada uscente meglio allineata verso il
+    target). Nessun bearing noto -> 0 (nessuna penalita', come il
+    prototipo originale quando 'bearing' mancava)."""
+    if not bearings:
+        return 0.0
+    migliore = float("inf")
+    for b in bearings:
+        d = abs(angolo_ideale - b)
+        d = min(d, 360.0 - d)
+        if d < migliore:
+            migliore = d
+    return migliore
+
+
 def estrai_feature_avanzate_vettoriale(G, nodi, target, nodes_data=None):
     """
-    Versione vettorializzata di estrai_feature_avanzate (prototipo
-    originale, per-nodo): calcola le feature di grado/gerarchia/heading per
-    un intero array di nodi in un colpo solo, riusando gli attributi
-    precalcolati in cache invece di interrogare G nodo per nodo — necessario
-    per essere chiamabile da A* a query-time su grafi di centinaia di
-    migliaia di nodi.
+    Versione vettorializzata delle feature avanzate. Riusa gli attributi
+    precalcolati in cache (grado, road_score-massimo, lista di bearing per
+    nodo) invece di interrogare G nodo per nodo.
+
+    heading_deviation_deg usa l'arco uscente PIU' ALLINEATO verso il
+    target (non il primo in ordine di inserimento OSM): la versione
+    "primo arco" dava una feature quasi casuale (correlazione ~0 col tempo
+    reale, verificato empiricamente su Padova) perche' il primo arco non
+    ha alcun legame con la direzione del target.
 
     nodi: lista o array di node-id (l'ordine determina l'ordine delle righe
           restituite, coerente con l'uso in genera_predizioni).
@@ -135,7 +174,7 @@ def estrai_feature_avanzate_vettoriale(G, nodi, target, nodes_data=None):
     if nodes_data is None:
         nodes_data = G.nodes(data=True)
 
-    grado, road_score, bearing_strada = precalcola_attributi_stradali(G)
+    grado, road_score, bearings_strada = precalcola_attributi_stradali(G)
 
     n_lat = np.array([nodes_data[n]["y"] for n in nodi], dtype=float)
     n_lon = np.array([nodes_data[n]["x"] for n in nodi], dtype=float)
@@ -150,15 +189,13 @@ def estrai_feature_avanzate_vettoriale(G, nodi, target, nodes_data=None):
     t_road = float(road_score.get(target, 1))
 
     angolo_ideale = calcola_bearing_vett(n_lat, n_lon, t_lat, t_lon)
-    angolo_strada = np.array(
+    deviazione = np.array(
         [
-            bearing_strada.get(n) if bearing_strada.get(n) is not None else angolo_ideale[i]
+            _deviazione_minima(bearings_strada.get(n, []), angolo_ideale[i])
             for i, n in enumerate(nodi)
         ],
         dtype=float,
     )
-    deviazione = np.abs(angolo_ideale - angolo_strada)
-    deviazione = np.minimum(deviazione, 360.0 - deviazione)
 
     n_nodi = len(nodi)
     return pd.DataFrame(
