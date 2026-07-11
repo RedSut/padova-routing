@@ -1,39 +1,50 @@
 """
 src/astar.py
 ============
-A* con predizioni ML come euristica, con un parametro esplicito per
-scegliere tra le due varianti discusse:
+A* con predizioni ML come euristica, con un parametro `modalita` esplicito
+per scegliere tra TRE varianti, con garanzie di correttezza diverse e
+costi diversi:
 
-- consenti_riapertura=True (default, SICURA): un nodo può essere
-  riaperto se si trova un g migliore dopo che era già stato estratto
-  dalla coda. Garantisce la correttezza quando l'euristica è AMMISSIBILE
-  (non sovrastima mai il costo vero) ma non necessariamente CONSISTENTE
-  (non garantisce la disuguaglianza triangolare arco per arco) — è
-  esattamente il caso qui: h_euclidea da sola è ammissibile per
-  costruzione, e la combinazione con la predizione ML preserva
-  l'ammissibilità nella pratica quanto il fattore di sicurezza è
-  calibrato bene (percentile robusto su un set di validazione, non il
-  massimo assoluto — vedi calibra_fattore_sicurezza_robusto altrove nel
-  progetto). ATTENZIONE: se il fattore di sicurezza fosse mal calibrato
-  e la componente ML arrivasse a sovrastimare il costo vero (cioè
-  l'euristica risultasse francamente NON ammissibile, non solo
-  incoerente), nemmeno la riapertura garantirebbe più la correttezza —
-  è un rischio distinto e più severo dell'incoerenza, verificato con un
-  controesempio numerico durante lo sviluppo. Il prezzo della riapertura,
-  anche nel caso ammissibile: nel caso peggiore la complessità degrada
-  verso quella di Bellman-Ford (O(V·E)), non resta O((V+E) log V) come
-  Dijkstra.
+- modalita="chiusa" (VELOCE, NON garantita corretta): il classico A* "da
+  manuale" — un nodo, una volta estratto dalla coda, non viene mai più
+  riconsiderato. Corretto SOLO se l'euristica è genuinamente ammissibile
+  E consistente. Qui NON garantito (la combinazione max(h_euclidea,
+  y_hat/fattore) può non essere consistente anche quando è ammissibile —
+  abbiamo provato quattro strategie di training per renderla consistente
+  e nessuna ha portato le violazioni sotto il 9-10% sul grafo reale di
+  Padova). Complessità nel caso peggiore: O((V+E) log V), come Dijkstra.
 
-- consenti_riapertura=False (VELOCE ma NON garantita corretta): un nodo,
-  una volta estratto, non viene mai più riconsiderato — il classico A*
-  "da manuale". Corretto SOLO se l'euristica è genuinamente ammissibile
-  (mai un problema qui, il min/max con h_euclidea lo garantisce) E
-  consistente (qui NON garantito — abbiamo provato quattro strategie di
-  training per renderla tale e nessuna ha portato le violazioni sotto il
-  9-10% sul grafo reale di Padova, vedi la tesi). Usarla solo se si è
-  disposti ad accettare il rischio di un cammino occasionalmente
-  subottimo, in cambio della complessità piena di Dijkstra nel caso
-  peggiore.
+- modalita="riapertura" (default, SICURA SE AMMISSIBILE): un nodo può
+  essere riaperto se si trova un g migliore dopo essere già stato
+  estratto. Garantisce la correttezza quando l'euristica è AMMISSIBILE
+  (non sovrastima mai il costo vero) anche se non consistente — risolve
+  esattamente il problema di "chiusa". ATTENZIONE: se il fattore di
+  sicurezza fosse mal calibrato e la componente ML arrivasse a
+  sovrastimare il costo vero (euristica francamente NON ammissibile, non
+  solo incoerente), nemmeno questa modalità garantisce più la
+  correttezza — è un rischio distinto e più severo, verificato con un
+  controesempio numerico. Complessità nel caso peggiore: degrada verso
+  Bellman-Ford, O(V·E).
+
+- modalita="esaustiva" (SEMPRE SICURA, anche con euristica inammissibile):
+  come "riapertura", ma toglie ANCHE la potatura basata su `f > g_target`
+  — quella regola presuppone che f sia un lower bound valido, il che
+  richiede ammissibilità. Senza quella potatura, l'algoritmo continua
+  finché la coda non è vuota, degenerando in una variante di
+  Bellman-Ford-Moore guidata dalla coda a priorità: `h` influenza solo
+  l'ORDINE di esplorazione, mai se un rilassamento viene saltato. Corretta
+  SEMPRE, qualunque sia `h` (anche completamente inammissibile — l'unico
+  requisito è che non ci siano cicli negativi nel grafo originale, sempre
+  vero per tempi di percorrenza reali). Prezzo: nel caso peggiore la
+  complessità è la stessa di "riapertura" (O(V·E)) — non c'è un ulteriore
+  peggioramento asintotico rispetto a "riapertura", solo la garanzia è
+  più forte.
+
+In tutti e tre i casi: g accumula SEMPRE pesi reali, mai alterati — h
+guida solo l'ordine (e in "chiusa"/"riapertura", anche la decisione di
+stop). Questo è il motivo per cui g resta sempre affidabile: la domanda
+non è mai "il costo calcolato è giusto?", ma "abbiamo esplorato abbastanza
+per essere sicuri che non ci sia niente di meglio?".
 """
 
 import heapq
@@ -42,6 +53,8 @@ import networkx as nx
 import numpy as np
 
 from src.predizioni import _haversine_vettoriale
+
+MODALITA_VALIDE = ("chiusa", "riapertura", "esaustiva")
 
 
 def _prepara_h_euclidea(G, target, v_max_kmh=130.0):
@@ -57,92 +70,14 @@ def _prepara_h_euclidea(G, target, v_max_kmh=130.0):
     return dict(zip(nodi_lista, h_arr))
 
 
-def astar_predizioni(
-    G: nx.MultiDiGraph,
-    source,
-    target,
-    h_ml: dict,
-    fattore_sicurezza: float = 1.5,
-    weight: str = "travel_time_d",
-    v_max_kmh: float = 130.0,
-    consenti_riapertura: bool = True,
-):
-    """
-    A* con euristica h(v) = max(h_euclidea(v), h_ml(v)/fattore_sicurezza).
-
-    Parametri:
-        G                 : grafo (pesi reali, mai alterati -- l'euristica
-                             guida solo l'ORDINE della coda, g resta
-                             sempre la somma di pesi veri lungo il cammino
-                             effettivamente percorso)
-        source, target    : nodi di partenza e arrivo
-        h_ml              : dict {nodo: predizione ML}, tempo residuo
-                             stimato in travel_time_d (positivo — non il
-                             valore invertito di segno usato internamente
-                             da sanifica_grafo/BCF, vedi calcola_h_modello
-                             altrove nel progetto)
-        fattore_sicurezza : calibrato su un set di validazione (vedi
-                             calibra_fattore_sicurezza_robusto), NON un
-                             numero a caso
-        v_max_kmh         : velocità massima cautelativa per h_euclidea,
-                             deve essere >= alla velocità massima reale
-                             sul grafo, altrimenti h_euclidea smette di
-                             essere ammissibile
-        consenti_riapertura : True (default) = sicura ma più lenta nel
-                             caso peggiore; False = veloce ma non garantita
-                             corretta con questa euristica (vedi docstring
-                             del modulo)
-
-    Restituisce:
-        (distanza_ottima_o_trovata, insieme_nodi_esplorati)
-
-        Con consenti_riapertura=True, distanza_ottima è sempre corretta.
-        Con consenti_riapertura=False, potrebbe non esserlo -- il chiamante
-        è responsabile di questa scelta.
-    """
-    h_euclidea = _prepara_h_euclidea(G, target, v_max_kmh)
-    h_arr = {
-        n: max(h_euclidea[n], h_ml.get(n, 0) / fattore_sicurezza)
-        for n in G.nodes()
-    }
-
+def _astar_nucleo(G, source, target, h_arr, weight, modalita):
+    """Nucleo comune alle tre modalita': cambia solo la regola di
+    stop/chiusura, la struttura della ricerca e' identica."""
     dist = {source: 0}
     queue = [(h_arr.get(source, 0), 0, source)]
     esplorati = set()
 
-    if consenti_riapertura:
-        # --- Versione SICURA: nessun taglio basato su un nodo "già
-        #     chiuso" -- un nodo può tornare in coda se si trova un g
-        #     migliore anche dopo essere stato estratto una volta. Lo
-        #     stop anticipato (f_u > g_target) resta valido SOLO perché
-        #     confrontiamo sempre con il miglior g(target) trovato finora,
-        #     mai con un valore che dipende dall'ammissibilità di h in un
-        #     punto specifico. ---
-        g_target = float("inf")
-        while queue:
-            f_u, g_u, u = heapq.heappop(queue)
-            if f_u > g_target:
-                break
-            if g_u > dist.get(u, float("inf")):
-                continue  # voce obsoleta: u è già stato migliorato dopo
-            esplorati.add(u)
-            if u == target:
-                g_target = min(g_target, g_u)
-                continue  # NON break: un cammino ancora migliore potrebbe essere in coda
-            for _, v, key, data in G.edges(u, keys=True, data=True):
-                nuova_g = g_u + data.get(weight, 1)
-                if nuova_g < dist.get(v, float("inf")):
-                    dist[v] = nuova_g
-                    heapq.heappush(queue, (nuova_g + h_arr.get(v, 0), nuova_g, v))
-                    if v == target:
-                        g_target = min(g_target, nuova_g)
-        return dist.get(target, float("inf")), esplorati
-
-    else:
-        # --- Versione VELOCE (classico A* "da manuale"): un nodo, una
-        #     volta estratto, è considerato definitivo -- corretto SOLO
-        #     se h è genuinamente consistente, non solo ammissibile.
-        #     Qui NON garantito: usare consapevoli del rischio. ---
+    if modalita == "chiusa":
         chiusi = set()
         while queue:
             f_u, g_u, u = heapq.heappop(queue)
@@ -161,31 +96,89 @@ def astar_predizioni(
                     heapq.heappush(queue, (nuova_g + h_arr.get(v, 0), nuova_g, v))
         return dist.get(target, float("inf")), esplorati
 
+    elif modalita == "riapertura":
+        g_target = float("inf")
+        while queue:
+            f_u, g_u, u = heapq.heappop(queue)
+            if f_u > g_target:
+                break
+            if g_u > dist.get(u, float("inf")):
+                continue
+            esplorati.add(u)
+            if u == target:
+                g_target = min(g_target, g_u)
+                continue
+            for _, v, key, data in G.edges(u, keys=True, data=True):
+                nuova_g = g_u + data.get(weight, 1)
+                if nuova_g < dist.get(v, float("inf")):
+                    dist[v] = nuova_g
+                    heapq.heappush(queue, (nuova_g + h_arr.get(v, 0), nuova_g, v))
+                    if v == target:
+                        g_target = min(g_target, nuova_g)
+        return dist.get(target, float("inf")), esplorati
+
+    elif modalita == "esaustiva":
+        while queue:
+            f_u, g_u, u = heapq.heappop(queue)
+            if g_u > dist.get(u, float("inf")):
+                continue
+            esplorati.add(u)
+            for _, v, key, data in G.edges(u, keys=True, data=True):
+                nuova_g = g_u + data.get(weight, 1)
+                if nuova_g < dist.get(v, float("inf")):
+                    dist[v] = nuova_g
+                    heapq.heappush(queue, (nuova_g + h_arr.get(v, 0), nuova_g, v))
+        return dist.get(target, float("inf")), esplorati
+
+    else:
+        raise ValueError(f"modalita deve essere una di {MODALITA_VALIDE}, ricevuto: {modalita!r}")
+
+
+def astar_predizioni(
+    G: nx.MultiDiGraph,
+    source,
+    target,
+    h_ml: dict,
+    fattore_sicurezza: float = 1.5,
+    weight: str = "travel_time_d",
+    v_max_kmh: float = 130.0,
+    modalita: str = "riapertura",
+):
+    """
+    A* con euristica h(v) = max(h_euclidea(v), h_ml(v)/fattore_sicurezza).
+
+    Parametri:
+        G                 : grafo (pesi reali, mai alterati)
+        source, target    : nodi di partenza e arrivo
+        h_ml              : dict {nodo: predizione ML}, tempo residuo
+                             stimato in travel_time_d (positivo)
+        fattore_sicurezza : calibrato su un set di validazione, NON un
+                             numero a caso
+        v_max_kmh         : velocita' massima cautelativa per h_euclidea
+        modalita          : "chiusa" | "riapertura" (default) | "esaustiva"
+                             -- vedi la docstring del modulo
+
+    Restituisce:
+        (distanza_ottima_o_trovata, insieme_nodi_esplorati)
+    """
+    if modalita not in MODALITA_VALIDE:
+        raise ValueError(f"modalita deve essere una di {MODALITA_VALIDE}, ricevuto: {modalita!r}")
+
+    h_euclidea = _prepara_h_euclidea(G, target, v_max_kmh)
+    h_arr = {
+        n: max(h_euclidea[n], h_ml.get(n, 0) / fattore_sicurezza)
+        for n in G.nodes()
+    }
+    return _astar_nucleo(G, source, target, h_arr, weight, modalita)
+
 
 if __name__ == "__main__":
-    # --- Test: dimostra che consenti_riapertura=False PUO' sbagliare con
-    #     un'euristica non garantita consistente, mentre =True è sempre
-    #     corretta -- stesso controesempio (seed=3) trovato durante lo
-    #     sviluppo del progetto. Grafo giocattolo, non il vero G_padova,
-    #     solo per isolare la logica dell'algoritmo. ---
     import random
-
-    class GrafoFinto(nx.MultiDiGraph):
-        """Wrapper minimale per riusare astar_predizioni su un grafo
-        costruito a mano con pesi arbitrari (senza coordinate reali,
-        serve solo a testare la logica di riapertura vs non-riapertura)."""
-        pass
 
     random.seed(13)
     N = 40
     G = nx.MultiDiGraph()
     for i in range(N):
-        # Coordinate tutte IDENTICHE apposta: rende h_euclidea = 0 ovunque
-        # (ammissibile banalmente, per costruzione), cosi' il test isola
-        # davvero il comportamento di riapertura vs non-riapertura rispetto
-        # a h_ml_finta, senza interferenze da un'euristica euclidea
-        # geograficamente scollegata dai pesi casuali di questo grafo
-        # giocattolo (che non hanno alcun legame con coordinate reali).
         G.add_node(i, y=45.0, x=11.0)
     for i in range(N):
         for j in range(N):
@@ -195,21 +188,46 @@ if __name__ == "__main__":
     source, target = 0, N - 1
     d_vero = nx.shortest_path_length(G, source, target, weight="travel_time_d")
 
-    # euristica AMMISSIBILE (mai sopra il vero costo residuo) ma NON
-    # CONSISTENTE (scala ogni nodo in modo indipendente, quindi puo'
-    # violare la disuguaglianza triangolare arco per arco) -- il caso che
-    # consenti_riapertura=True garantisce di gestire correttamente.
-    # Un'euristica anche solo occasionalmente INAMMISSIBILE (sopra il
-    # vero costo) romperebbe la garanzia anche CON riapertura -- quello
-    # e' un rischio distinto, piu' severo, discusso nella docstring sopra.
     dist_vera_a_target = nx.single_source_dijkstra_path_length(
         G.reverse(copy=False), target, weight="travel_time_d"
     )
-    h_ml_finta = {n: dist_vera_a_target.get(n, 0) * random.uniform(0.0, 1.0) for n in range(N)}
+    h_ml_ammissibile = {n: dist_vera_a_target.get(n, 0) * random.uniform(0.0, 1.0) for n in range(N)}
 
-    d_con, e_con = astar_predizioni(G, source, target, h_ml_finta, fattore_sicurezza=1.0, consenti_riapertura=True)
-    d_senza, e_senza = astar_predizioni(G, source, target, h_ml_finta, fattore_sicurezza=1.0, consenti_riapertura=False)
+    print("=== Test 1: euristica ammissibile-ma-non-consistente ===")
+    print(f"Distanza vera: {d_vero}")
+    for modalita in MODALITA_VALIDE:
+        d, e = astar_predizioni(G, source, target, h_ml_ammissibile, fattore_sicurezza=1.0, modalita=modalita)
+        print(f"  {modalita:<12}: distanza={d}  nodi={len(e)}  corretto={d == d_vero}")
 
-    print(f"Distanza vera (Dijkstra):        {d_vero}")
-    print(f"consenti_riapertura=True:        {d_con}  (corretto: {d_con == d_vero})")
-    print(f"consenti_riapertura=False:       {d_senza}  (corretto: {d_senza == d_vero})")
+    print("\n=== Test 2: euristica INAMMISSIBILE (puo' sovrastimare fino a 3x) ===")
+    trovato = False
+    for seed2 in range(200):
+        random.seed(seed2)
+        G2 = nx.MultiDiGraph()
+        for i in range(N):
+            G2.add_node(i, y=45.0, x=11.0)
+        for i in range(N):
+            for j in range(N):
+                if i != j and random.random() < 0.25:
+                    G2.add_edge(i, j, key=0, travel_time_d=random.randint(1, 15))
+        try:
+            d_vero2 = nx.shortest_path_length(G2, source, target, weight="travel_time_d")
+        except nx.NetworkXNoPath:
+            continue
+        dist_vera2 = nx.single_source_dijkstra_path_length(
+            G2.reverse(copy=False), target, weight="travel_time_d"
+        )
+        h_ml_inammissibile = {
+            n: dist_vera2.get(n, 0) * (random.uniform(1.3, 3.0) if random.random() < 0.3 else random.uniform(0.5, 0.99))
+            for n in range(N)
+        }
+        d_riap, _ = astar_predizioni(G2, source, target, h_ml_inammissibile, fattore_sicurezza=1.0, modalita="riapertura")
+        d_esau, _ = astar_predizioni(G2, source, target, h_ml_inammissibile, fattore_sicurezza=1.0, modalita="esaustiva")
+        if d_riap != d_vero2 and d_esau == d_vero2:
+            print(f"[seed={seed2}] Distanza vera: {d_vero2}")
+            print(f"  riapertura : {d_riap}  corretto={d_riap == d_vero2}  <-- puo' sbagliare")
+            print(f"  esaustiva  : {d_esau}  corretto={d_esau == d_vero2}  <-- sempre corretta")
+            trovato = True
+            break
+    if not trovato:
+        print("Nessun controesempio trovato in 200 tentativi (improbabile ma possibile)")
